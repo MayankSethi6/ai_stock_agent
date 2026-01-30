@@ -4,7 +4,7 @@ from google import genai
 import plotly.graph_objects as go
 import pandas as pd
 
-# 1. SETUP & CLIENT INITIALIZATION
+# 1. INITIALIZATION & SECRETS
 st.set_page_config(page_title="AI Stock Agent 2026", layout="wide")
 
 try:
@@ -16,61 +16,86 @@ except Exception:
 
 # 2. UI HEADER
 st.title("🤖 Autonomous AI Stock Intelligence")
-ticker = st.sidebar.text_input("Enter Ticker", value="NVDA").upper()
-period_map = {"1 Month": "1mo", "3 Month": "3mo", "1 Year": "1y"}
-selected_period = st.sidebar.selectbox("Analysis Window", list(period_map.keys()))
+
+# 3. SIDEBAR WITH PERSISTENCE
+ticker = st.sidebar.text_input("Enter Ticker", value="NVDA", key="ticker_input").upper()
+period_options = {"1 Month": "1mo", "3 Month": "3mo", "1 Year": "1y"}
+# Use a key to ensure Streamlit tracks the selection state correctly
+selected_label = st.sidebar.selectbox("Analysis Window", options=list(period_options.keys()), key="period_select")
+yf_period = period_options[selected_label]
 
 if st.sidebar.button("Execute Full Analysis"):
     try:
         # DATA ACQUISITION
         stock = yf.Ticker(ticker)
-        hist = stock.history(period=period_map[selected_period])
-        news = stock.news[:5] # Fetch top 5 recent headlines
+        hist = stock.history(period=yf_period)
+        
+        # FIX: Robust news fetching for 2026 yfinance structure
+        raw_news = stock.news
+        headlines = []
+        if raw_news:
+            for item in raw_news[:5]:
+                # 2026 yfinance news items may use 'title' or 'content' depending on source
+                # Using .get() prevents the 'title' KeyError
+                title = item.get('title') or item.get('summary') or "Headline unavailable"
+                link = item.get('link') or "#"
+                headlines.append({"title": title, "link": link})
         
         if hist.empty:
-            st.error("Invalid Ticker or No Data Found.")
+            st.error(f"No data found for {ticker}. Please check the ticker symbol.")
             st.stop()
 
-        # 3. SENTIMENT ANALYSIS (NLP LAYER)
-        headlines = [n['title'] for n in news]
-        sentiment_prompt = f"Analyze the sentiment of these headlines for {ticker}: {headlines}. Return a score from -1 (Bearish) to 1 (Bullish) and a 1-sentence summary."
-        
-        with st.spinner("Analyzing Market Sentiment..."):
-            sent_resp = client.models.generate_content(model="gemini-2.0-flash", contents=sentiment_prompt)
-            # Simple logic to extract a score if the AI provides one, else default to 0
-            sentiment_text = sent_resp.text
+        # 4. DATA PREPROCESSING (Technical Indicators)
+        hist['SMA_20'] = hist['Close'].rolling(window=20).mean()
+        delta = hist['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        hist['RSI'] = 100 - (100 / (1 + (gain / loss)))
 
-        # 4. VISUALIZATION (Decision Support)
+        # 5. UI LAYOUT
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            # Candlestick Chart
-            fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
-            fig.update_layout(title=f"{ticker} Technical Chart", template="plotly_dark")
+            # Interactive Chart
+            fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'], name="Price")])
+            fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_20'], name='SMA 20', line=dict(color='orange')))
+            fig.update_layout(title=f"{ticker} Technicals ({selected_label})", template="plotly_dark", xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True)
             
-            # Display Recent News
-            st.subheader("Latest Market News")
-            for n in news:
-                st.write(f"🔹 {n['title']} ([Link]({n['link']}))")
+            # News Section
+            st.subheader("📰 Market Headlines")
+            if headlines:
+                for h in headlines:
+                    st.markdown(f"• [{h['title']}]({h['link']})")
+            else:
+                st.write("No recent news found.")
 
         with col2:
-            st.subheader("AI Agent Reasoning")
+            st.subheader("🧠 AI Agent Reasoning")
             
-            # Combine Technical + Sentiment for Final Reasoning
-            tech_summary = hist.tail(3).to_string()
-            final_prompt = f"""
-            System: Senior Investment Strategist
-            Ticker: {ticker}
-            Recent Prices: {tech_summary}
-            News Sentiment Analysis: {sentiment_text}
+            # NLP Layer: Sentiment Synthesis
+            news_text = " ".join([h['title'] for h in headlines])
+            tech_data = hist.tail(5).to_string()
             
-            Task: Provide a final BUY/SELL/HOLD signal with a 'Confidence Score' (0-100%).
+            prompt = f"""
+            Identify as a Wall Street Analyst. 
+            Stock: {ticker}
+            Recent News: {news_text}
+            Recent Data: {tech_data}
+            
+            Instructions: Provide a clear 'Signal' (BUY/SELL/HOLD) and 3 bullet points on the 'Why' considering both technicals and sentiment.
             """
             
-            with st.spinner("Generating Strategic Recommendation..."):
-                final_resp = client.models.generate_content(model="gemini-2.0-flash", contents=final_prompt)
-                st.info(final_resp.text)
+            with st.spinner("Agent is synthesizing data..."):
+                try:
+                    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+                    st.info(response.text)
+                except Exception as ai_e:
+                    st.error(f"AI Reasoning Error: {ai_e}")
 
     except Exception as e:
         st.error(f"Operational Error: {e}")
+
+# FOOTER NEXT STEP
+st.divider()
+st.caption("Data provided by yfinance and processed by Gemini 2.0. This is not financial advice.")
