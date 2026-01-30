@@ -1,69 +1,61 @@
 import streamlit as st
 import yfinance as yf
-from google import genai  # Updated import
+from google import genai
 import plotly.graph_objects as go
 import pandas as pd
 
-# 1. CONFIGURATION
-st.set_page_config(page_title="AI Stock Analyst", layout="wide")
+# 1. SETUP
+st.set_page_config(page_title="AI Stock Agent", layout="wide")
+
 try:
+    # Use st.secrets locally or in Streamlit Cloud
     API_KEY = st.secrets["GOOGLE_API_KEY"]
-    # The Client must be initialized from the genai module
     client = genai.Client(api_key=API_KEY)
-except Exception as e:
-    st.error(f"Configuration Error: {e}")
+except Exception:
+    st.error("API Key not found. Please set GOOGLE_API_KEY in your secrets.")
     st.stop()
 
-# Use the latest stable model (Gemini 2.5 Flash is now the standard)
-MODEL_ID = "gemini-2.0-flash"
-
-# 2. APP UI HEADER
-st.title("📈 Autonomous AI Stock Agent")
-st.markdown("Enter a stock ticker to get real-time analysis and AI-powered recommendations.")
-
-# 3. SIDEBAR INPUTS
-ticker = st.sidebar.text_input("Stock Ticker (e.g., TSLA, NVDA, AAPL)", value="AAPL")
-period = st.sidebar.selectbox("Data Period", ["1mo", "3mo", "6mo", "1y"])
-
-if st.sidebar.button("Run Analysis"):
+# 2. UI
+ticker = st.sidebar.text_input("Stock Ticker", value="NVDA")
+if st.sidebar.button("Run AI Analysis"):
     try:
-        # 4. DATA ACQUISITION
+        # DATA FETCHING
         stock = yf.Ticker(ticker)
-        hist = stock.history(period=period)
+        hist = stock.history(period="1mo")
         
-        # 5. FEATURE ENGINEERING (Technical Indicators)
-        hist['SMA_20'] = hist['Close'].rolling(window=20).mean()
-        hist['RSI'] = 100 - (100 / (1 + hist['Close'].diff().where(hist['Close'].diff() > 0, 0).rolling(14).mean() / 
-                                     -hist['Close'].diff().where(hist['Close'].diff() < 0, 0).rolling(14).mean()))
+        if hist.empty:
+            st.error(f"Could not find data for {ticker}. Check the symbol.")
+            st.stop()
 
-        # 6. VISUALIZATION
+        # DISPLAY DATA
         col1, col2 = st.columns([2, 1])
         with col1:
             fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
-            fig.add_trace(go.Scatter(x=hist.index, y=hist['SMA_20'], name='SMA 20', line=dict(color='orange')))
             st.plotly_chart(fig, use_container_width=True)
 
-        # 7. AI REASONING LAYER
+        # AI ANALYSIS BLOCK
         with col2:
-            st.subheader("AI Analyst Insight")
-            recent_data = hist.tail(10).to_string()
-        # Updated Prompt for 2026 Agents
-            prompt = f"""Analyze {ticker} with this data: {recent_data}. 
-            Provide a BUY/SELL/HOLD recommendation with technical reasoning."""
-   
-# 4. GENERATING THE CONTENT
-            st.markdown(f"### AI Recommendation\n{response.text}")
-        # The new SDK uses: client.models.generate_content
-        with st.spinner("AI Agent is analyzing market trends..."):
-            response = client.models.generate_content(
-            model=MODEL_ID,
-            contents=f"Analyze this stock data for {ticker}: {recent_data}"
-            )
-            st.write(response.text)
+            st.subheader("AI Recommendation")
+            data_summary = hist.tail(5).to_string()
+            
+            # Initializing response to None to prevent NameError
+            response = None 
+            
+            with st.spinner("Analyzing..."):
+                try:
+                    # NEW 2026 METHOD CALL
+                    response = client.models.generate_content(
+                        model="gemini-2.0-flash",
+                        contents=f"Analyze {ticker} based on this data:\n{data_summary}\nGive a BUY/SELL/HOLD signal."
+                    )
+                except Exception as api_err:
+                    st.error(f"AI API Error: {api_err}")
 
-        # 8. DATA TABLE
-        st.subheader("Raw Technical Data")
-        st.dataframe(hist.tail(5))
+            # Check if response was successfully created before accessing .text
+            if response:
+                st.write(response.text)
+            else:
+                st.warning("The AI could not generate a response. Please try again.")
 
     except Exception as e:
-        st.error(f"Error: {e}. Please ensure the ticker is valid.")
+        st.error(f"System Error: {e}")
