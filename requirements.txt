@@ -3,3 +3,5 @@ yfinance
 google-genai
 pandas
 plotly
+fpdf2
+numpy
