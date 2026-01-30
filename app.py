@@ -21,7 +21,7 @@ st.markdown("Enter a stock ticker to get real-time analysis and AI-powered recom
 
 # 2. UI
 ticker = st.sidebar.text_input("Stock Ticker (e.g., TSLA, NVDA, AAPL)", value="AAPL")
-period = st.sidebar.selectbox("Data Period", ["1mo", "3mo", "6mo", "1y"])
+period = st.sidebar.selectbox("Data Period", ["1 Month", "3 Month", "6 Month", "1 Year"])
 
 if st.sidebar.button("Run AI Analysis"):
     try:
@@ -51,26 +51,26 @@ if st.sidebar.button("Run AI Analysis"):
             fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
             st.plotly_chart(fig, use_container_width=True)
 
-        # AI ANALYSIS BLOCK
+        # 7. AI REASONING LAYER
         with col2:
-            st.subheader("AI Recommendation")
-            data_summary = hist.tail(5).to_string()
-            
-            # Initializing response to None to prevent NameError
-            response = None 
-            
-            # 4. GENERATING THE CONTENT
+            st.subheader("AI Analyst Insight")
+            recent_data = hist.tail(10).to_string()
+        # Updated Prompt for 2026 Agents
+            prompt = f"""Analyze {ticker} with this data: {recent_data}. 
+            Provide a BUY/SELL/HOLD recommendation with technical reasoning."""
+   
+        # 4. GENERATING THE CONTENT
             st.markdown(f"### AI Recommendation\n{response.text}")
-                # The new SDK uses: client.models.generate_content
-            with st.spinner("AI Agent is analyzing market trends..."):
-                try:
-                    response = client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=f"Analyze this stock data for {ticker}: {recent_data}"
-                    )
-
-                except Exception as api_err:
-                    st.error(f"AI API Error: {api_err}")
+        # The new SDK uses: client.models.generate_content
+        with st.spinner("AI Agent is analyzing market trends..."):
+            try:
+                response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=f"Analyze this stock data for {ticker}: {recent_data}"
+                )    
+               
+            except Exception as api_err:
+                st.error(f"AI API Error: {api_err}")
 
             # Check if response was successfully created before accessing .text
             if response:
