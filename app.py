@@ -49,11 +49,11 @@ if st.sidebar.button("Run Analysis"):
     
             with st.spinner("Agent is reasoning..."):
         # Updated method call for the new SDK
-        response = client.models.generate_content(
+            response = client.models.generate_content(
             model=MODEL_ID,
             contents=prompt
-        )
-        st.write(response.text)
+            )
+            st.write(response.text)
 
         # 8. DATA TABLE
         st.subheader("Raw Technical Data")
