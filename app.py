@@ -10,8 +10,8 @@ import requests
 st.set_page_config(page_title="AI Stock Agent 2026", layout="wide", page_icon="📈")
 
 # Accessing Gemini API
-    API_KEY = st.secrets["GOOGLE_API_KEY"]
-    client = genai.Client(api_key=API_KEY)
+API_KEY = st.secrets["GOOGLE_API_KEY"]
+client = genai.Client(api_key=API_KEY)
 
 # --- HELPER FUNCTIONS ---
 
