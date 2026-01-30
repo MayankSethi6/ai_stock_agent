@@ -47,8 +47,8 @@ if st.sidebar.button("Run Analysis"):
             prompt = f"""Analyze {ticker} with this data: {recent_data}. 
             Provide a BUY/SELL/HOLD recommendation with technical reasoning."""
     
-            with st.spinner("Agent is reasoning..."):
-        # Updated method call for the new SDK
+        with st.spinner("Agent is reasoning..."):
+            # Updated method call for the new SDK
             response = client.models.generate_content(
             model=MODEL_ID,
             contents=prompt
