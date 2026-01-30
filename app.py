@@ -20,14 +20,14 @@ st.title("📈 Autonomous AI Stock Agent")
 st.markdown("Enter a stock ticker to get real-time analysis and AI-powered recommendations.")
 
 # 2. UI
-ticker = st.sidebar.text_input("Stock Ticker", value="NVDA")
+ticker = st.sidebar.text_input("Stock Ticker (e.g., TSLA, NVDA, AAPL)", value="AAPL")
 period = st.sidebar.selectbox("Data Period", ["1mo", "3mo", "6mo", "1y"])
 
 if st.sidebar.button("Run AI Analysis"):
     try:
         # DATA FETCHING
         stock = yf.Ticker(ticker)
-        hist = stock.history(period="period")
+        hist = stock.history(period=period)
         
         if hist.empty:
             st.error(f"Could not find data for {ticker}. Check the symbol.")
