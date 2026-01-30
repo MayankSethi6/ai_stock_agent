@@ -1,6 +1,6 @@
 import streamlit as st
 import yfinance as yf
-from google import genai
+from google.genai import types
 import plotly.graph_objects as go
 import pandas as pd
 from fpdf import FPDF
@@ -80,7 +80,35 @@ if run_analysis:
         with st.spinner("Fetching market data..."):
             stock = yf.Ticker(ticker)
             hist = stock.history(period="3mo")
-            
+
+        with st.spinner("Agent is reasoning..."):
+            try:
+                # 1. Clean the prompt to ensure no empty/weird characters
+                clean_prompt = str(prompt).strip()
+        
+                if not clean_prompt:
+                    st.error("The prompt was empty. Please check your ticker and data.")
+                    st.stop()
+
+                # 2. Use the new 2026 method structure with explicit contents
+                # We wrap the string in a list to satisfy the SDK's internal validation
+                response = client.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=[clean_prompt] 
+                )
+
+                # 3. Validation check before accessing .text
+                if response and hasattr(response, 'text'):
+                    analysis_text = response.text
+                    st.info(analysis_text)
+                else:
+                    st.error("The AI returned an empty response. Please try again.")
+                    
+            except Exception as ai_e:
+                # This will catch the specific API/Network error you're seeing
+                st.error(f"AI Reasoning Error: {ai_e}")
+                st.write("Troubleshooting: Check your internet connection and verify your API key is active.")
+
         if hist.empty:
             st.warning("Data unavailable for this ticker.")
         else:
