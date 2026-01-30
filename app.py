@@ -91,7 +91,7 @@ with tab1:
                 
                 try:
                     # Using the list format for the 2026 SDK contents
-                    response = client.models.generate_content(model="gemini-2.0-flash", contents=[prompt])
+                    response = client.models.generate_content(model="gemini-3-flash-preview", contents=[prompt])
                     analysis_text = response.text
                     
                     st.info(analysis_text)
