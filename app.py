@@ -6,12 +6,16 @@ import pandas as pd
 
 # 1. CONFIGURATION
 st.set_page_config(page_title="AI Stock Analyst", layout="wide")
-GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
-client = genai.Client(api_key=API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+try:
+    API_KEY = st.secrets["GOOGLE_API_KEY"]
+    # The Client must be initialized from the genai module
+    client = genai.Client(api_key=API_KEY)
+except Exception as e:
+    st.error(f"Configuration Error: {e}")
+    st.stop()
 
 # Use the latest stable model (Gemini 2.5 Flash is now the standard)
-MODEL_ID = "gemini-2.5-flash"
+MODEL_ID = "gemini-2.0-flash"
 
 # 2. APP UI HEADER
 st.title("📈 Autonomous AI Stock Agent")
@@ -46,12 +50,14 @@ if st.sidebar.button("Run Analysis"):
         # Updated Prompt for 2026 Agents
             prompt = f"""Analyze {ticker} with this data: {recent_data}. 
             Provide a BUY/SELL/HOLD recommendation with technical reasoning."""
-    
-        with st.spinner("Agent is reasoning..."):
-            # Updated method call for the new SDK
+   
+# 4. GENERATING THE CONTENT
+    st.markdown(f"### AI Recommendation\n{response.text}")
+    # The new SDK uses: client.models.generate_content
+        with st.spinner("AI Agent is analyzing market trends..."):
             response = client.models.generate_content(
             model=MODEL_ID,
-            contents=prompt
+            contents=f"Analyze this stock data for {ticker}: {recent_data}"
             )
             st.write(response.text)
 
