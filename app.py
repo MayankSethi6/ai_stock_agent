@@ -39,15 +39,24 @@ def get_ticker_and_logo(query):
         return None, None, None
 
 def generate_pdf(ticker, name, analysis):
-    """Generates a professional PDF report from the analysis text."""
+    """Generates a professional PDF report and fixes encoding errors."""
+    # 1. CLEAN THE TEXT
+    # AI often uses Unicode dashes and curly quotes which crash standard PDF fonts
+    clean_analysis = analysis.replace('–', '-').replace('—', '-').replace('’', "'").replace('‘', "'").replace('“', '"').replace('”', '"')
+    
     pdf = FPDF()
     pdf.add_page()
+    
+    # Header
     pdf.set_font("Arial", "B", 18)
     pdf.cell(0, 15, f"AI Research Report: {name} ({ticker})", ln=True, align="C")
     pdf.ln(10)
+    
+    # Body Text
     pdf.set_font("Arial", size=11)
-    # multi_cell is critical for wrapping long AI responses
-    pdf.multi_cell(0, 8, analysis)
+    # Using 'latin-1' encoding to ensure standard characters map correctly
+    pdf.multi_cell(0, 8, clean_analysis.encode('latin-1', 'replace').decode('latin-1'))
+    
     return pdf.output()
 
 # --- 3. DASHBOARD UI ---
