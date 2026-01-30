@@ -29,9 +29,9 @@ if st.sidebar.button("Run AI Analysis"):
         stock = yf.Ticker(ticker)
         hist = stock.history(period=period)
         
-        if hist.empty:
-            st.error(f"Could not find data for {ticker}. Check the symbol.")
-            st.stop()
+    if hist.empty:
+        st.error(f"Could not find data for {ticker}. Check the symbol.")
+        st.stop()
 
         # 5. FEATURE ENGINEERING (Technical Indicators)
         hist['SMA_20'] = hist['Close'].rolling(window=20).mean()
