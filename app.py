@@ -52,8 +52,8 @@ if st.sidebar.button("Run Analysis"):
             Provide a BUY/SELL/HOLD recommendation with technical reasoning."""
    
 # 4. GENERATING THE CONTENT
-    st.markdown(f"### AI Recommendation\n{response.text}")
-    # The new SDK uses: client.models.generate_content
+            st.markdown(f"### AI Recommendation\n{response.text}")
+        # The new SDK uses: client.models.generate_content
         with st.spinner("AI Agent is analyzing market trends..."):
             response = client.models.generate_content(
             model=MODEL_ID,
