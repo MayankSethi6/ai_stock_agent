@@ -133,7 +133,7 @@ with tab1:
                         
                         try:
                             response = st.session_state.client.models.generate_content(
-                                model="gemini-2.0-flash", 
+                                model="gemini-3-flash-preview", 
                                 contents=[prompt]
                             )
                             st.session_state.analysis_text = response.text
