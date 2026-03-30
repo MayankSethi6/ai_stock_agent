@@ -72,7 +72,7 @@ with st.sidebar:
                 if not hist.empty:
                     cp = float(hist['Close'].iloc[-1])
                     prompt = f"Role: Hedge Fund Manager. Asset: {asset['name']} @ {cp}. Provide 1-sentence sentiment: Bullish, Bearish, or Neutral and specify one target Strike Price for Options."
-                    res = st.session_state.client.models.generate_content(model="gemini-2.0-flash", contents=[prompt])
+                    res = st.session_state.client.models.generate_content(model="gemini-3-flash-preview", contents=[prompt])
                     
                     st.session_state.curr_trade = {
                         "ticker": asset['symbol'], "name": asset['name'], "sector": asset['sector'],
