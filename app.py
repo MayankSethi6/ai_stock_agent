@@ -7,25 +7,22 @@ from datetime import datetime, time
 import pytz
 
 # --- 1. CONFIG & SYSTEM ---
-st.set_page_config(page_title="AI Alpha - Executive Fund Desk", layout="wide", page_icon="🏛️")
+st.set_page_config(page_title="AI Alpha - Bulletproof Desk", layout="wide", page_icon="🏛️")
 
 USD_INR_2026 = 87.50
 NSE_LOTS = {"NIFTY": 65, "BANKNIFTY": 30, "RELIANCE": 250, "SBIN": 1500, "TCS": 175, "INFY": 400}
 
-# Initialize Gemini Client
 if 'client' not in st.session_state:
     st.session_state.client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
 # --- PERSISTENT STATE ---
-# This block ensures all variables exist before the UI runs
-if 'fund_balance' not in st.session_state:
-    st.session_state.fund_balance = 1000000.0
-if 'balance_history' not in st.session_state:
-    st.session_state.balance_history = [1000000.0]
-if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = []
-if 'pnl_ledger' not in st.session_state:
-    st.session_state.pnl_ledger = []
+for key, val in {
+    'fund_balance': 1000000.0, 
+    'balance_history': [1000000.0], 
+    'portfolio': [], 
+    'pnl_ledger': []
+}.items():
+    if key not in st.session_state: st.session_state[key] = val
 
 # --- 2. UTILITIES ---
 def get_market_status():
@@ -40,6 +37,7 @@ def universal_search(query):
         if search.quotes:
             q = search.quotes[0]
             tk = yf.Ticker(q['symbol'])
+            # Defensive check for sector/currency
             return {
                 "symbol": q['symbol'], 
                 "name": q.get('shortname', q['symbol']),
@@ -50,7 +48,7 @@ def universal_search(query):
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
-    st.header("🏢 Fund Assets")
+    st.header("💳 Fund Assets")
     st.metric("Net Liquid Capital", f"₹{st.session_state.fund_balance:,.2f}")
     
     if st.button("🗑️ Wipe & Reset Terminal"):
@@ -61,7 +59,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    user_query = st.text_input("Global Search (Company/Index)", value="Nifty 50")
+    user_query = st.text_input("Global Search", value="Reliance")
     asset = universal_search(user_query)
     
     if asset:
@@ -73,95 +71,79 @@ with st.sidebar:
         if st.button("🔥 Run Manager Intel"):
             with st.spinner("AI Quant Analysis in Progress..."):
                 tk = yf.Ticker(asset['symbol'])
-                # Get the absolute latest price
                 hist = tk.history(period="1d")
                 if not hist.empty:
                     cp = float(hist['Close'].iloc[-1])
-                    news = [n['title'] for n in tk.news[:3]]
-                    prompt = f"Hedge Fund Manager. Asset: {asset['name']} @ {cp}. News: {news}. Strategy?"
+                    
+                    # --- FIXED NEWS LOGIC ---
+                    try:
+                        raw_news = tk.news
+                        headlines = [n.get('title', 'No Title') for n in raw_news[:3]] if raw_news else ["No recent news found."]
+                    except Exception:
+                        headlines = ["News currently unavailable from Yahoo Finance."]
+                    
+                    prompt = f"Hedge Fund Manager. Asset: {asset['name']} @ {cp}. News: {headlines}. Strategy?"
                     res = st.session_state.client.models.generate_content(model="gemini-3-flash-preview", contents=[prompt])
                     
-                    # SAVE TO STATE (This prevents the error!)
                     st.session_state.curr_trade = {
                         "ticker": asset['symbol'], "name": asset['name'], "sector": asset['sector'],
                         "price": cp, "qty": lots * lot_size, "report": res.text, "currency": asset['currency']
                     }
                     st.rerun()
 
-# --- 4. DASHBOARD TABS ---
-tab_ai, tab_trade, tab_report = st.tabs(["🧠 Alpha Strategy", "🚀 Execution Desk", "📜 Fund Performance"])
+# --- 4. TABS ---
+t1, t2, t3 = st.tabs(["🧠 Strategy", "🚀 Trade Desk", "📊 Performance"])
 
-with tab_ai:
-    # FIXED: Added the check to prevent the KeyError
+with t1:
     if "curr_trade" in st.session_state:
-        st.subheader(f"Strategy Briefing: {st.session_state.curr_trade['name']}")
+        st.subheader(f"Strategy: {st.session_state.curr_trade['name']}")
         st.info(st.session_state.curr_trade['report'])
-    else:
-        st.warning("Please search for an asset in the sidebar and click 'Run Manager Intel' to generate a report.")
+    else: st.warning("Run 'Manager Intel' in the sidebar to load data.")
 
-with tab_trade:
-    # Check if a trade is ready to be placed
+with t2:
     if "curr_trade" in st.session_state:
-        t = st.session_state.curr_trade
-        fx = USD_INR_2026 if t['currency'] == 'USD' else 1
-        price_inr = t['price'] * fx
-        margin = price_inr * t['qty'] * 0.10
+        tr = st.session_state.curr_trade
+        fx = USD_INR_2026 if tr['currency'] == 'USD' else 1
+        margin = (tr['price'] * fx) * tr['qty'] * 0.10
         
-        st.subheader("Dynamic Order Entry")
+        st.subheader("Order Entry")
         c1, c2, c3 = st.columns(3)
-        sl = c1.number_input("Stop Loss (Price)", value=t['price']*0.97)
-        tp = c2.number_input("Take Profit (Price)", value=t['price']*1.06)
+        sl = c1.number_input("Stop Loss", value=tr['price']*0.97)
+        tp = c2.number_input("Take Profit", value=tr['price']*1.05)
         c3.metric("Margin Required", f"₹{margin:,.2f}")
 
-        if st.button("CONFIRM INSTITUTIONAL BUY"):
-            is_open, _ = get_market_status()
-            if not is_open:
-                st.error("Market is currently CLOSED. Orders blocked.")
-            elif st.session_state.fund_balance >= margin:
+        if st.button("EXECUTE BUY"):
+            if st.session_state.fund_balance >= margin:
                 st.session_state.fund_balance -= margin
                 st.session_state.portfolio.append({
-                    "name": t['name'], "ticker": t['ticker'], "entry": t['price'],
-                    "qty": t['qty'], "margin": margin, "sl": sl, "tp": tp,
-                    "currency": t['currency'], "sector": t['sector'], 
-                    "time": datetime.now().strftime("%H:%M")
+                    "name": tr['name'], "ticker": tr['ticker'], "entry": tr['price'],
+                    "qty": tr['qty'], "margin": margin, "sl": sl, "tp": tp,
+                    "currency": tr['currency'], "sector": tr['sector']
                 })
-                st.toast("Trade Executed!")
+                st.toast("Success!")
                 st.rerun()
-            else: st.error("Margin Call: Insufficient Funds.")
+            else: st.error("Insufficient Funds.")
 
     st.divider()
-    st.subheader("📂 Active Portfolio Risk")
-    if st.session_state.portfolio and st.button("🔄 Sync P&L & Check Exit Levels"): st.rerun()
+    if st.session_state.portfolio:
+        if st.button("🔄 Sync P&L"): st.rerun()
+        for i, pos in enumerate(st.session_state.portfolio):
+            live = yf.Ticker(pos['ticker']).history(period="1d")
+            if not live.empty:
+                cp = float(live['Close'].iloc[-1])
+                fx = USD_INR_2026 if pos['currency'] == 'USD' else 1
+                pnl = (cp - pos['entry']) * pos['qty'] * fx
+                status = "🛑 SL HIT" if cp <= pos['sl'] else "🎯 TP HIT" if cp >= pos['tp'] else "🟢 ACTIVE"
+                
+                with st.expander(f"{pos['name']} | {status} | P&L: ₹{pnl:,.2f}"):
+                    if st.button("CLOSE", key=f"c_{i}") or status != "🟢 ACTIVE":
+                        st.session_state.fund_balance += (pos['margin'] + pnl)
+                        st.session_state.balance_history.append(st.session_state.fund_balance)
+                        st.session_state.pnl_ledger.append({"Asset": pos['name'], "P&L": pnl})
+                        st.session_state.portfolio.pop(i)
+                        st.rerun()
 
-    for i, pos in enumerate(st.session_state.portfolio):
-        # Fetching fresh LTP for active positions
-        live_data = yf.Ticker(pos['ticker']).history(period="1d")
-        if not live_data.empty:
-            live_p = float(live_data['Close'].iloc[-1])
-            fx = USD_INR_2026 if pos['currency'] == 'USD' else 1
-            pnl = (live_p - pos['entry']) * pos['qty'] * fx
-            
-            status = "🟢 ACTIVE"
-            if live_p <= pos['sl']: status = "🛑 STOP LOSS TRIGGERED"
-            elif live_p >= pos['tp']: status = "🎯 TAKE PROFIT TRIGGERED"
-
-            with st.expander(f"{pos['name']} | {status} | P&L: ₹{pnl:,.2f}", expanded=(status != "🟢 ACTIVE")):
-                st.write(f"Entry: {pos['entry']} | Current: {live_p} | Sector: {pos['sector']}")
-                if st.button("EXIT TRADE", key=f"exit_{i}") or status != "🟢 ACTIVE":
-                    st.session_state.fund_balance += (pos['margin'] + pnl)
-                    st.session_state.balance_history.append(st.session_state.fund_balance)
-                    st.session_state.pnl_ledger.append({
-                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "Asset": pos['name'], "Sector": pos['sector'], "P&L": round(pnl, 2)
-                    })
-                    st.session_state.portfolio.pop(i)
-                    st.rerun()
-
-with tab_report:
+with t3:
     if st.session_state.pnl_ledger:
-        df = pd.DataFrame(st.session_state.pnl_ledger)
-        st.plotly_chart(px.line(y=st.session_state.balance_history, title="Equity Curve", template="plotly_dark"), use_container_width=True)
-        st.dataframe(df, use_container_width=True)
-        st.download_button("📥 Download Report", df.to_csv().encode('utf-8'), "performance.csv", "text/csv")
-    else:
-        st.info("No realized trades in the ledger.")
+        st.plotly_chart(px.line(st.session_state.balance_history, title="Equity Curve"), use_container_width=True)
+        st.table(pd.DataFrame(st.session_state.pnl_ledger))
