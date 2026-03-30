@@ -6,153 +6,138 @@ import plotly.express as px
 from datetime import datetime, time
 import pytz
 
-# --- 1. CONFIG & SYSTEM ---
-st.set_page_config(page_title="AI Alpha - Elite Searchable Desk", layout="wide", page_icon="🏛️")
+# --- 1. CONFIG ---
+st.set_page_config(page_title="AI Alpha - Global Search Desk", layout="wide", page_icon="🏛️")
 
-# 2026 NSE F&O Master Mapping (Friendly Name : Ticker)
-ASSET_LOOKUP = {
-    "Nifty 50": "NIFTY.NS",
-    "Bank Nifty": "BANKNIFTY.NS",
-    "Finnifty": "FINNIFTY.NS",
-    "Reliance": "RELIANCE.NS",
-    "TCS": "TCS.NS",
-    "HDFC Bank": "HDFCBANK.NS",
-    "ICICI Bank": "ICICIBANK.NS",
-    "Infosys": "INFY.NS",
-    "SBI": "SBIN.NS",
-    "Airtel": "BHARTIARTL.NS",
-    "ITC": "ITC.NS",
-    "Tata Motors": "TATAMOTORS.NS",
-    "Kotak Bank": "KOTAKBANK.NS",
-    "L&T": "LT.NS",
-    "Axis Bank": "AXISBANK.NS"
-}
-
-# Ticker to Lot Size (March 2026)
-LOT_SIZES = {
-    "NIFTY.NS": 65, "BANKNIFTY.NS": 30, "FINNIFTY.NS": 60, "RELIANCE.NS": 250,
-    "TCS.NS": 175, "HDFCBANK.NS": 550, "ICICIBANK.NS": 700, "INFY.NS": 400,
-    "SBIN.NS": 1500, "BHARTIARTL.NS": 950, "ITC.NS": 1600, "TATAMOTORS.NS": 1425,
-    "KOTAKBANK.NS": 400, "LT.NS": 300, "AXISBANK.NS": 625
-}
-
-DISCLAIMER = "⚠️ **Institutional Disclosure:** 2026 NSE Lot Sizes. Market Hours: 9:15 AM - 3:30 PM IST."
+# March 2026 NSE Lot Sizes (Fallback for Indian Stocks)
+NSE_LOTS = {"NIFTY": 65, "BANKNIFTY": 30, "RELIANCE": 250, "SBIN": 1500, "TCS": 175, "INFY": 400}
 
 if 'client' not in st.session_state:
     st.session_state.client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
 # --- PERSISTENT STATE ---
-if 'fund_balance' not in st.session_state:
-    st.session_state.fund_balance = 1000000.0
-if 'balance_history' not in st.session_state:
-    st.session_state.balance_history = [1000000.0]
-if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = []
-if 'pnl_ledger' not in st.session_state:
-    st.session_state.pnl_ledger = []
+for key, val in {
+    'fund_balance': 1000000.0, 
+    'balance_history': [1000000.0], 
+    'portfolio': [], 
+    'pnl_ledger': []
+}.items():
+    if key not in st.session_state: st.session_state[key] = val
 
-# --- 2. UTILITIES ---
-def get_market_status():
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist)
-    is_open = now.weekday() < 5 and time(9,15) <= now.time() <= time(15,30)
-    return is_open, now.strftime("%H:%M:%S")
-
-def get_live_price(ticker):
+# --- 2. THE SEARCH ENGINE ---
+def universal_search(query):
+    """Searches Yahoo Finance for the best matching ticker."""
     try:
-        data = yf.Ticker(ticker).history(period="1d")
-        return float(data['Close'].iloc[-1]) if not data.empty else None
+        search = yf.Search(query, max_results=1)
+        if search.quotes:
+            res = search.quotes[0]
+            return {
+                "symbol": res['symbol'],
+                "shortname": res.get('shortname', res['symbol']),
+                "exchange": res.get('exchDisp', 'Unknown')
+            }
     except: return None
+    return None
 
-# --- 3. SIDEBAR: THE TRADING CONSOLE ---
+def get_sentiment_analysis(ticker, name):
+    """Uses Gemini to analyze recent news headlines for the stock."""
+    try:
+        tk = yf.Ticker(ticker)
+        news = tk.news[:5] # Get 5 latest headlines
+        headlines = [n['title'] for n in news]
+        
+        prompt = f"""
+        Analyze these headlines for {name} ({ticker}): {headlines}
+        1. Summarize the sentiment (Bullish/Bearish/Neutral).
+        2. Give a 'Vibe Score' from 1-10 (10 is extremely positive).
+        3. Be brief (2 sentences).
+        """
+        res = st.session_state.client.models.generate_content(model="gemini-3-flash-preview", contents=[prompt])
+        return res.text
+    except: return "Sentiment data unavailable."
+
+# --- 3. SIDEBAR ---
 with st.sidebar:
-    st.header("💳 Fund Management")
-    st.metric("Liquid Paper Cash", f"₹{st.session_state.fund_balance:,.2f}")
+    st.header("💳 Fund: ₹{:,.2f}".format(st.session_state.fund_balance))
     
-    if st.button("🔄 Reset Account"):
-        st.session_state.fund_balance = 1000000.0
-        st.session_state.balance_history = [1000000.0]
-        st.session_state.portfolio, st.session_state.pnl_ledger = [], []
-        st.rerun()
+    st.subheader("🔍 Universal Search")
+    user_query = st.text_input("Type Company Name (e.g. Zomato, Nvidia, Apple)", value="Reliance")
     
-    st.divider()
-    st.header("🔍 Asset Search")
-    # SEARCHABLE BOX
-    search_input = st.selectbox("Search Company or Index", options=list(ASSET_LOOKUP.keys()))
-    target_ticker = ASSET_LOOKUP[search_input]
-    target_lot = LOT_SIZES[target_ticker]
+    with st.spinner("Searching..."):
+        asset_info = universal_search(user_query)
     
-    st.write(f"**Ticker:** `{target_ticker}` | **Lot Size:** `{target_lot}`")
-    lots = st.number_input("Lots", min_value=1, max_value=100, value=1)
-    
-    market_open, cur_time = get_market_status()
-    if market_open: st.success(f"🟢 Market Open: {cur_time}")
-    else: st.error(f"🔴 Market Closed: {cur_time}")
-
-    if st.button("Generate Alpha Strategy"):
-        with st.spinner("AI Analysis..."):
-            hist = yf.Ticker(target_ticker).history(period="5d", interval="15m")
-            cp = float(hist['Close'].iloc[-1])
-            prompt = f"Role: Hedge Fund Manager. Asset: {search_input} @ {cp}. Provide 2-5% profit scalp strategy."
-            res = st.session_state.client.models.generate_content(model="gemini-3-flash-preview", contents=[prompt])
-            st.session_state.curr_trade = {"ticker": target_ticker, "name": search_input, "price": cp, "lots": lots, "report": res.text}
+    if asset_info:
+        st.success(f"Found: {asset_info['shortname']} ({asset_info['symbol']})")
+        st.caption(f"Exchange: {asset_info['exchange']}")
+        
+        # Determine Lot Size (Default to 1 for US/Global stocks)
+        base_ticker = asset_info['symbol'].split(".")[0]
+        lot_size = NSE_LOTS.get(base_ticker, 1) if ".NS" in asset_info['symbol'] else 1
+        
+        lots = st.number_input(f"Quantity (Lot Size: {lot_size})", min_value=1, value=1)
+        
+        if st.button("Analyze & Fetch News"):
+            with st.spinner("Reading Headlines..."):
+                tk = yf.Ticker(asset_info['symbol'])
+                cp = tk.history(period="1d")['Close'].iloc[-1]
+                sentiment = get_sentiment_analysis(asset_info['symbol'], asset_info['shortname'])
+                
+                st.session_state.curr_trade = {
+                    "ticker": asset_info['symbol'], "name": asset_info['shortname'],
+                    "price": float(cp), "qty": lots * lot_size, "sentiment": sentiment
+                }
+    else:
+        st.error("No asset found. Try a clearer name.")
 
 # --- 4. MAIN TABS ---
-tab_strat, tab_desk, tab_ledger = st.tabs(["🧠 AI Strategy", "🚀 Trading Desk", "📜 P&L Ledger"])
+tab_strat, tab_desk, tab_ledger = st.tabs(["📊 AI Sentiment", "🚀 Trading Desk", "📈 Performance"])
 
 with tab_strat:
     if "curr_trade" in st.session_state:
-        st.subheader(f"Strategy: {st.session_state.curr_trade['name']}")
-        st.info(st.session_state.curr_trade['report'])
-    st.caption(DISCLAIMER)
+        st.subheader(f"Institutional Intel: {st.session_state.curr_trade['name']}")
+        st.markdown(st.session_state.curr_trade['sentiment'])
+        st.metric("Live Market Price", f"₹{st.session_state.curr_trade['price']:,.2f}")
+    else:
+        st.info("Search for a company in the sidebar to begin.")
 
 with tab_desk:
     if "curr_trade" in st.session_state:
-        qty = LOT_SIZES[st.session_state.curr_trade['ticker']] * st.session_state.curr_trade['lots']
-        margin = float(st.session_state.curr_trade['price'] * qty * 0.10)
+        trade = st.session_state.curr_trade
+        margin_req = trade['price'] * trade['qty'] * 0.10
         
-        # RISK METER
-        risk_pct = (margin / st.session_state.fund_balance) * 100
-        st.write(f"**Exposure:** {qty} units | **Margin:** ₹{margin:,.2f}")
+        st.write(f"Executing **{trade['qty']} units** of {trade['name']}")
+        st.write(f"Margin Required: ₹{margin_req:,.2f}")
         
-        if risk_pct > 50:
-            st.warning(f"⚠️ HIGH RISK: This trade uses {risk_pct:.1f}% of your liquid cash.")
-        else:
-            st.info(f"Risk Profile: {risk_pct:.1f}% of capital.")
-
-        if st.button("EXECUTE BUY"):
-            if not market_open: st.error("Market Closed.")
-            elif st.session_state.fund_balance < margin: st.error("Insufficient Funds.")
-            else:
-                st.session_state.fund_balance -= margin
+        if st.button("CONFIRM BUY ORDER"):
+            if st.session_state.fund_balance >= margin_req:
+                st.session_state.fund_balance -= margin_req
                 st.session_state.portfolio.append({
-                    "name": st.session_state.curr_trade['name'], "ticker": st.session_state.curr_trade['ticker'], 
-                    "entry": float(st.session_state.curr_trade['price']), "qty": int(qty), "margin": margin
+                    "name": trade['name'], "ticker": trade['ticker'],
+                    "entry": trade['price'], "qty": trade['qty'], "margin": margin_req
                 })
+                st.toast("Order Filled!")
                 st.rerun()
+            else: st.error("Insufficient Capital.")
 
     st.divider()
-    if st.session_state.portfolio and st.button("🔄 Sync Live Prices"): st.rerun()
-
+    st.subheader("📂 Open Positions")
     for i, pos in enumerate(st.session_state.portfolio):
-        cp = get_live_price(pos['ticker'])
-        if cp:
-            pnl = float((cp - pos['entry']) * pos['qty'])
-            pnl_color = "green" if pnl >= 0 else "red"
-            with st.expander(f"{pos['name']} | Live P&L: ₹{pnl:,.2f}", expanded=True):
-                st.markdown(f"Entry: ₹{pos['entry']} | LTP: ₹{cp} | **P&L:** <span style='color:{pnl_color}'>₹{pnl:,.2f}</span>", unsafe_allow_html=True)
-                if st.button("SELL & WRITE OFF", key=f"s_{i}"):
-                    st.session_state.fund_balance += (pos['margin'] + pnl)
-                    st.session_state.balance_history.append(st.session_state.fund_balance)
-                    st.session_state.pnl_ledger.append({"Asset": pos['name'], "Net P&L": pnl, "Exit Price": cp})
-                    st.session_state.portfolio.pop(i)
-                    st.rerun()
+        # Quick price sync
+        live_p = yf.Ticker(pos['ticker']).history(period="1d")['Close'].iloc[-1]
+        pnl = (live_p - pos['entry']) * pos['qty']
+        
+        with st.expander(f"{pos['name']} | P&L: ₹{pnl:,.2f}"):
+            st.write(f"Entry: {pos['entry']} | Current: {live_p}")
+            if st.button("Close Position", key=f"close_{i}"):
+                st.session_state.fund_balance += (pos['margin'] + pnl)
+                st.session_state.balance_history.append(st.session_state.fund_balance)
+                st.session_state.pnl_ledger.append({"Asset": pos['name'], "P&L": pnl})
+                st.session_state.portfolio.pop(i)
+                st.rerun()
 
 with tab_ledger:
-    st.subheader("📈 Institutional Equity Curve")
     if len(st.session_state.balance_history) > 1:
-        fig = px.line(st.session_state.balance_history, title="Total Fund Value", template="plotly_dark")
+        fig = px.line(y=st.session_state.balance_history, title="Equity Curve", template="plotly_dark")
         st.plotly_chart(fig, use_container_width=True)
     if st.session_state.pnl_ledger:
         st.table(pd.DataFrame(st.session_state.pnl_ledger))
-    st.caption(DISCLAIMER)
