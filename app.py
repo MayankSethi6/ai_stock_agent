@@ -3,133 +3,152 @@ import yfinance as yf
 from google import genai
 import pandas as pd
 import plotly.express as px
-from datetime import datetime, date
-import numpy as np
-from scipy.stats import norm
+from datetime import datetime, time
+import pytz
 
 # --- 1. CONFIG & SYSTEM ---
-st.set_page_config(page_title="AI Alpha - F&O Desk", layout="wide", page_icon="📈")
+st.set_page_config(page_title="AI Alpha - F&O Executive Desk", layout="wide", page_icon="📈")
 
 USD_INR_2026 = 87.50
 # 2026 Revised Lot Sizes
-NSE_LOTS = {"NIFTY": 65, "BANKNIFTY": 30, "FINNIFTY": 60, "RELIANCE": 250, "SBIN": 1500}
+NSE_LOTS = {"NIFTY": 65, "BANKNIFTY": 30, "FINNIFTY": 60, "RELIANCE": 250, "SBIN": 1500, "TCS": 175}
 
 if 'client' not in st.session_state:
     st.session_state.client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
 # --- PERSISTENT STATE ---
-for key, val in {'fund_balance': 1000000.0, 'balance_history': [1000000.0], 'portfolio': [], 'pnl_ledger': []}.items():
+for key, val in {
+    'fund_balance': 1000000.0, 
+    'balance_history': [1000000.0], 
+    'portfolio': [], 
+    'pnl_ledger': []
+}.items():
     if key not in st.session_state: st.session_state[key] = val
 
-# --- 2. OPTION UTILITIES (Greeks Lite) ---
-def get_option_recommendation(ticker_symbol, market_price, ai_view):
-    """Simple Logic to recommend an option strategy based on AI sentiment"""
-    sentiment = ai_view.lower()
-    if "bullish" in sentiment or "buy" in sentiment:
-        strike = round(market_price / 50) * 50 # ATM Strike
-        return {"type": "CE", "strike": strike, "strategy": "Long Call (Aggressive Bullish)"}
-    elif "bearish" in sentiment or "sell" in sentiment:
-        strike = round(market_price / 50) * 50
-        return {"type": "PE", "strike": strike, "strategy": "Long Put (Aggressive Bearish)"}
-    return {"type": "CE", "strike": market_price, "strategy": "Neutral - Wait for Signal"}
+# --- 2. UTILITIES ---
+def get_market_status():
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    is_open = now.weekday() < 5 and time(9,15) <= now.time() <= time(15,30)
+    return is_open, now.strftime("%H:%M:%S")
+
+def universal_search(query):
+    try:
+        search = yf.Search(query, max_results=1)
+        if search.quotes:
+            q = search.quotes[0]
+            tk = yf.Ticker(q['symbol'])
+            return {
+                "symbol": q['symbol'], "name": q.get('shortname', q['symbol']),
+                "sector": tk.info.get('sector', 'Uncategorized'),
+                "currency": tk.info.get('currency', 'INR')
+            }
+    except: return None
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
-    st.header("💳 Institutional Capital")
-    st.metric("Net Liquidity", f"₹{st.session_state.fund_balance:,.2f}")
-    
-    user_query = st.text_input("Asset Search", value="NIFTY 50")
-    # Universal Search Logic
-    search = yf.Search(user_query, max_results=1)
-    asset = None
-    if search.quotes:
-        q = search.quotes[0]
-        asset = {"symbol": q['symbol'], "name": q.get('shortname', q['symbol']), "currency": "INR" if ".NS" in q['symbol'] else "USD"}
+    st.header("💳 Fund: ₹{:,.2f}".format(st.session_state.fund_balance))
+    if st.button("🔄 Reset Terminal"):
+        st.session_state.fund_balance = 1000000.0
+        st.session_state.balance_history = [1000000.0]
+        st.session_state.portfolio, st.session_state.pnl_ledger = [], []
+        if "curr_trade" in st.session_state: del st.session_state.curr_trade
+        st.rerun()
+
+    st.divider()
+    user_query = st.text_input("Search Asset (e.g. Nifty, Google, SBI)", value="Nifty 50")
+    asset = universal_search(user_query)
     
     if asset:
         st.success(f"Focused: {asset['name']}")
+        is_nse = ".NS" in asset['symbol']
+        lot_size = NSE_LOTS.get(asset['symbol'].split(".")[0].replace("^",""), 1) if is_nse else 1
+        lots = st.number_input(f"Lots (Size: {lot_size})", min_value=1, value=1)
+        
         if st.button("🔥 Run Manager Intel"):
-            with st.spinner("Analyzing Global Macros..."):
+            with st.spinner("AI Analysis..."):
                 tk = yf.Ticker(asset['symbol'])
-                cp = tk.history(period="1d")['Close'].iloc[-1]
-                prompt = f"Hedge Fund Manager view on {asset['name']} at {cp}. Give a 1-sentence sentiment (Bullish/Bearish) and why."
-                res = st.session_state.client.models.generate_content(model="gemini-2.0-flash", contents=[prompt])
-                
-                st.session_state.curr_trade = {
-                    "ticker": asset['symbol'], "name": asset['name'], 
-                    "market_price": cp, "report": res.text, "currency": asset['currency']
-                }
-                st.rerun()
+                hist = tk.history(period="1d")
+                if not hist.empty:
+                    cp = float(hist['Close'].iloc[-1])
+                    prompt = f"Role: Hedge Fund Manager. Asset: {asset['name']} @ {cp}. Provide 1-sentence sentiment: Bullish, Bearish, or Neutral and specify one target Strike Price for Options."
+                    res = st.session_state.client.models.generate_content(model="gemini-2.0-flash", contents=[prompt])
+                    
+                    st.session_state.curr_trade = {
+                        "ticker": asset['symbol'], "name": asset['name'], "sector": asset['sector'],
+                        "market_price": cp, "qty": lots * lot_size, "report": res.text, "currency": asset['currency']
+                    }
+                    st.rerun()
 
 # --- 4. TABS ---
-tab_ai, tab_opt_rec, tab_trade, tab_perf = st.tabs(["🧠 AI Strategy", "🎯 Option Recommendations", "🚀 Execution Desk", "📊 Fund Performance"])
+t_ai, t_opt, t_desk, t_perf = st.tabs(["🧠 AI Strategy", "🎯 Option Recs", "🚀 Trade Desk", "📊 Performance"])
 
-with tab_ai:
+with t_ai:
     if "curr_trade" in st.session_state:
         st.info(st.session_state.curr_trade['report'])
-    else: st.warning("Search an asset and run Intel first.")
+    else: st.warning("Run 'Manager Intel' in sidebar.")
 
-with tab_opt_rec:
+with t_opt:
     if "curr_trade" in st.session_state:
         tr = st.session_state.curr_trade
-        rec = get_option_recommendation(tr['ticker'], tr['market_price'], tr['report'])
+        st.subheader("🎯 Suggested Option Strategies")
+        # Logic to extract strike/type from AI text or suggest ATM
+        atm_strike = round(tr['market_price'] / 50) * 50
         
-        st.subheader(f"Strategy: {rec['strategy']}")
         c1, c2 = st.columns(2)
-        c1.metric("Recommended Strike", f"{rec['strike']} {rec['type']}")
-        c2.metric("Underlying Price", f"₹{tr['market_price']:,.2f}")
-        st.write("💡 *Note: Recommendations are based on AI sentiment analysis and ATM (At-the-money) strike selection.*")
-    else: st.info("Run AI Strategy to see Option Recommendations.")
+        with c1:
+            st.markdown("### 🟢 Bullish View")
+            st.write(f"**Strategy:** Buy Call (CE)")
+            st.code(f"Strike: {atm_strike} CE")
+        with c2:
+            st.markdown("### 🔴 Bearish View")
+            st.write(f"**Strategy:** Buy Put (PE)")
+            st.code(f"Strike: {atm_strike} PE")
+        st.caption("ATM Strikes are auto-calculated based on current spot price.")
 
-with tab_trade:
+with t_desk:
     if "curr_trade" in st.session_state:
         tr = st.session_state.curr_trade
         st.subheader("Order Configuration")
         
-        trade_mode = st.radio("Instrument Type", ["Equity (Spot)", "Options (F&O)"], horizontal=True)
+        mode = st.radio("Instrument", ["Equity/Spot", "Options (CE/PE)"], horizontal=True)
         
-        # Shared Configuration
-        lot_size = NSE_LOTS.get(tr['ticker'].replace(".NS", ""), 1)
-        lots = st.number_input(f"Quantity (Lots of {lot_size})", min_value=1, value=1)
-        total_qty = lots * lot_size
+        col_p, col_sl, col_tp = st.columns(3)
+        # Dynamic Price Entry
+        entry_price = col_p.number_input("Entry Price (Limit)", value=float(tr['market_price']) if mode=="Equity/Spot" else 100.0)
+        sl = col_sl.number_input("Stop Loss", value=entry_price * 0.90)
+        tp = col_tp.number_input("Take Profit", value=entry_price * 1.20)
         
-        if trade_mode == "Equity (Spot)":
-            entry_price = st.number_input("Limit Price", value=float(tr['market_price']))
-            margin_pct = 0.20 # 20% for stocks
-        else:
-            c1, c2, c3 = st.columns(3)
-            opt_type = c1.selectbox("Option Type", ["CE", "PE"])
-            strike = c2.number_input("Strike Price", value=round(tr['market_price']/50)*50)
-            entry_price = c3.number_input("Option Premium (Price)", value=100.0) # Default premium
-            margin_pct = 1.0 # Options buying requires 100% premium upfront
-            
-        sl = st.number_input("Stop Loss", value=entry_price * 0.8)
-        tp = st.number_input("Take Profit", value=entry_price * 1.5)
+        fx = USD_INR_2026 if tr['currency'] == 'USD' else 1
+        # Margin: 10% for Equity, 100% for Options (Premium Buying)
+        margin_mult = 0.10 if mode == "Equity/Spot" else 1.0
+        req_margin = (entry_price * fx) * tr['qty'] * margin_mult
         
-        fx = USD_INR_2026 if tr['currency'] == "USD" else 1
-        req_capital = (entry_price * fx) * total_qty * margin_pct
-        st.metric("Total Capital Required", f"₹{req_capital:,.2f}")
-        
-        if st.button("EXECUTE TRADE"):
-            if st.session_state.fund_balance >= req_capital:
-                st.session_state.fund_balance -= req_capital
+        st.metric("Total Margin Required", f"₹{req_margin:,.2f}")
+
+        if st.button("EXECUTE ORDER"):
+            if st.session_state.fund_balance >= req_margin:
+                st.session_state.fund_balance -= req_margin
                 st.session_state.portfolio.append({
-                    "name": f"{tr['name']} {strike if trade_mode=='Options' else ''} {opt_type if trade_mode=='Options' else ''}",
-                    "ticker": tr['ticker'], "entry": entry_price, "qty": total_qty, 
-                    "sl": sl, "tp": tp, "type": trade_mode, "margin": req_capital
+                    "name": f"{tr['name']} ({'Opt' if mode=='Options (CE/PE)' else 'Spot'})",
+                    "ticker": tr['ticker'], "entry": entry_price, "qty": tr['qty'],
+                    "margin": req_margin, "sl": sl, "tp": tp, "currency": tr['currency']
                 })
-                st.toast("Position Opened!")
                 st.rerun()
             else: st.error("Insufficient Funds.")
 
     st.divider()
-    st.subheader("📂 Active Positions")
     for i, pos in enumerate(st.session_state.portfolio):
-        # Simplification: Options P&L is tracked against their premium entry
-        # In a real app, you'd fetch the specific option contract symbol LTP
-        with st.expander(f"{pos['name']} ({pos['type']})"):
-            st.write(f"Entry: {pos['entry']} | Qty: {pos['qty']} | Capital: ₹{pos['margin']:,.2f}")
-            if st.button("EXIT", key=f"exit_{i}"):
-                st.session_state.fund_balance += pos['margin'] # Simplified exit at cost for this demo
+        # Tracking logic
+        with st.expander(f"{pos['name']} | Entry: {pos['entry']}"):
+            st.write(f"Qty: {pos['qty']} | Margin: ₹{pos['margin']:,.2f}")
+            if st.button("EXIT POSITION", key=f"ex_{i}"):
+                st.session_state.fund_balance += pos['margin'] # Exit at cost for simulation
+                st.session_state.pnl_ledger.append({"Asset": pos['name'], "P&L": 0.0})
                 st.session_state.portfolio.pop(i)
                 st.rerun()
+
+with t_perf:
+    if st.session_state.pnl_ledger:
+        st.plotly_chart(px.line(st.session_state.balance_history, title="Equity Curve"), use_container_width=True)
+        st.table(pd.DataFrame(st.session_state.pnl_ledger))
