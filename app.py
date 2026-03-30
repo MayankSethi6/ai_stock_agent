@@ -3,133 +3,116 @@ import yfinance as yf
 from google import genai
 import plotly.graph_objects as go
 import pandas as pd
+from datetime import datetime
 
-# --- 1. CONFIG & STYLING ---
-st.set_page_config(page_title="AI Alpha - Gemini 3 Scalper", layout="wide", page_icon="⚡")
+# --- 1. CONFIG & STYLE ---
+st.set_page_config(page_title="AI Alpha - NSE Hedge Fund Agent", layout="wide", page_icon="🏛️")
 
-DISCLAIMER = """
-<div style='border: 1px solid #ff4b4b; padding: 10px; border-radius: 5px; background-color: #1e1e1e; color: #ff4b4b; font-size: 0.8em; margin-top: 20px;'>
-    <strong>⚠️ SEBI/Regulatory Disclaimer:</strong> This application is an AI-driven simulation for educational use only. 
-    Option trading involves high risk, including total loss of capital. We do not provide financial advice. 
-    Always consult a certified professional before trading 1-lot or any size.
-</div>
-"""
+# Restrict to NSE only
+NSE_TICKERS = ["NIFTY.NS", "^NSEI", "BANKNIFTY.NS", "^NSEBANK", "RELIANCE.NS", "HDFCBANK.NS", "SBIN.NS", "TCS.NS", "INFY.NS"]
 
-# --- 2. THE ENGINE ---
+DISCLAIMER = "⚠️ **Institutional Disclosure:** Professional Trading involves capital risk. 2026 NSE Lot Sizes applied. Not a SEBI advisory."
+
 if 'client' not in st.session_state:
-    try:
-        # Initialize with the latest GenAI client
-        st.session_state.client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
-    except:
-        st.error("Missing GOOGLE_API_KEY in Secrets.")
-        st.stop()
+    st.session_state.client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
-def get_2026_lot_size(ticker):
+# Initialize Paper Trading Session
+if 'portfolio' not in st.session_state:
+    st.session_state.portfolio = [] # List of dicts: {ticker, lots, entry, current, status}
+
+# --- 2. THE 2026 NSE QUANT ENGINE ---
+def get_nse_lot(ticker):
+    """Accurate 2026 NSE Revised Lot Sizes."""
     lot_map = {
-        "NIFTY.NS": 65, "BANKNIFTY.NS": 30, "FINNIFTY.NS": 60,
-        "RELIANCE.NS": 500, "TCS.NS": 175, "SBIN.NS": 1500
+        "NIFTY.NS": 65, "^NSEI": 65,
+        "BANKNIFTY.NS": 30, "^NSEBANK": 30,
+        "FINNIFTY.NS": 60, "RELIANCE.NS": 500,
+        "HDFCBANK.NS": 550, "SBIN.NS": 1500
     }
-    return lot_map.get(ticker.upper(), 250)
+    return lot_map.get(ticker.upper(), 100)
 
-def calculate_metrics(df):
-    df = df.copy()
-    # RSI
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    df['RSI'] = 100 - (100 / (1 + (gain/loss)))
-    # Volume Breakout Logic: Current Vol > 1.5x of 20-day Avg
-    df['Vol_Avg'] = df['Volume'].rolling(20).mean()
-    df['Vol_Surge'] = df['Volume'] > (df['Vol_Avg'] * 1.5)
-    return df
+def fund_manager_strategy(ticker, price, rsi, volume_surge):
+    """Gemini-3-Flash reasoning as a 10-year Hedge Fund Vet."""
+    prompt = f"""
+    Act as a Hedge Fund Manager with 10+ years of consistent profit. 
+    Context: NSE Market, March 2026. Ticker: {ticker} at ₹{price}.
+    Technicals: RSI is {rsi:.1f}. Volume Surge: {volume_surge}.
+    
+    Instruction: Provide a high-conviction scalp strategy (2-5% target). 
+    Focus on risk-mitigation. If the setup is weak, tell the user to 'STAY IN CASH'.
+    Include:
+    1. Exact Buy/Sell points for an ATM Call/Put.
+    2. The 'Stop-Out' time (minutes) before Theta decay ruins the trade.
+    """
+    res = st.session_state.client.models.generate_content(
+        model="gemini-3-flash-preview", 
+        contents=[prompt]
+    )
+    return res.text
 
 # --- 3. UI LAYOUT ---
-st.title("Gemini 3 'Frontier' Scalper Dashboard 🤖")
+st.title("🏛️ AI Alpha: NSE Institutional Dashboard")
 
 with st.sidebar:
-    st.header("⚡ Settings")
-    ticker = st.text_input("Ticker Symbol", "NIFTY.NS")
-    target_profit = st.slider("Target Profit (%)", 2.0, 5.0, 3.0)
+    st.header("🏢 Fund Execution Desk")
+    selected_ticker = st.selectbox("Select NSE Asset", NSE_TICKERS)
+    lot_count = st.number_input("Number of Lots", min_value=1, max_value=50, value=1)
     
-    if st.button("🚀 Run Analysis"):
-        with st.spinner("Invoking gemini-3-flash-preview..."):
-            tk = yf.Ticker(ticker)
-            hist = tk.history(period="1mo", interval="15m") # Intraday focus
-            
+    if st.button("Generate Alpha"):
+        with st.spinner("Analyzing Market Microstructure..."):
+            tk = yf.Ticker(selected_ticker)
+            hist = tk.history(period="5d", interval="15m")
             if not hist.empty:
-                hist = calculate_metrics(hist)
-                lot = get_2026_lot_size(ticker)
                 curr_price = hist['Close'].iloc[-1]
-                vol_status = "SURGE DETECTED" if hist['Vol_Surge'].iloc[-1] else "Normal"
+                # Simple RSI
+                delta = hist['Close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                rsi = 100 - (100 / (1 + (gain/loss))).iloc[-1]
+                vol_surge = hist['Volume'].iloc[-1] > (hist['Volume'].rolling(20).mean().iloc[-1] * 1.5)
                 
-                # Model Input
-                prompt = f"""
-                Model: gemini-3-flash-preview (2026 Edition)
-                Stock: {ticker} at ₹{curr_price:.2f}
-                RSI: {hist['RSI'].iloc[-1]:.2f}, Volume Status: {vol_status}
-                Goal: {target_profit}% Profit on 1 Lot (Size: {lot})
-                
-                Tasks:
-                1. Predict price direction for the next 2-4 hours.
-                2. Identify specific Entry/Exit Premium (assumed ATM premium is ₹150).
-                3. Provide a 'Greeks-based' hold time in minutes.
-                """
-                
-                # Using the specific Gemini 3 Flash Preview ID
-                res = st.session_state.client.models.generate_content(
-                    model="gemini-3-flash-preview", 
-                    contents=[prompt]
-                )
+                analysis = fund_manager_strategy(selected_ticker, curr_price, rsi, vol_surge)
                 
                 st.session_state.update({
-                    "hist": hist, "report": res.text, "ticker": ticker,
-                    "lot": lot, "price": curr_price, "vol": vol_status
+                    "curr_data": {"ticker": selected_ticker, "price": curr_price, "lots": lot_count, "analysis": analysis}
                 })
 
-# --- 4. TABS ---
-if "hist" in st.session_state:
-    tab1, tab2, tab3 = st.tabs(["📊 Stock View", "🎯 Option Analysis", "📈 Accuracy & Prediction"])
+# --- 4. TABS & PAPER TRADING ---
+tab_stock, tab_ai, tab_paper = st.tabs(["📊 Market Watch", "🧠 Manager Recommendation", "💰 Live Paper Trade"])
 
-    with tab1:
-        st.subheader(f"Price Action & Volume: {st.session_state['ticker']}")
-        if st.session_state['vol'] == "SURGE DETECTED":
-            st.success("🔥 VOLUME BREAKOUT: High probability of momentum move.")
-        
-        fig = go.Figure()
-        sd = st.session_state['hist']
-        fig.add_trace(go.Candlestick(x=sd.index, open=sd['Open'], high=sd['High'], low=sd['Low'], close=sd['Close']))
-        fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown(DISCLAIMER, unsafe_allow_html=True)
+if "curr_data" in st.session_state:
+    with tab_stock:
+        st.subheader(f"Institutional View: {st.session_state.curr_data['ticker']}")
+        # Placeholder for price chart
+        st.write(f"Current Spot Price: ₹{st.session_state.curr_data['price']:.2f}")
+        st.caption(DISCLAIMER)
 
-    with tab2:
-        st.subheader("1-Lot Option Strategy (ATM)")
-        st.info(st.session_state['report'])
-        
-        # Calculation for 1 lot
-        est_premium = 150.0 # Illustrative
-        target_exit = est_premium * (1 + target_profit/100)
-        net_inr = (target_exit - est_premium) * st.session_state['lot']
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Current Lot Size", st.session_state['lot'])
-        c2.metric("Target Exit Premium", f"₹{target_exit:.2f}")
-        c3.metric("Est. Profit/Lot", f"₹{net_inr:,.0f}")
-        st.markdown(DISCLAIMER, unsafe_allow_html=True)
+    with tab_ai:
+        st.subheader("💡 Manager's High-Conviction Report")
+        st.write(st.session_state.curr_data['analysis'])
+        st.caption(DISCLAIMER)
 
-    with tab3:
-        st.subheader("Model Prediction Accuracy")
-        st.write("Current model: `gemini-3-flash-preview` (Preview Mode)")
+    with tab_paper:
+        st.subheader("🚀 Live Execution (Paper Trading)")
+        lot_size = get_nse_lot(st.session_state.curr_data['ticker'])
+        total_qty = lot_size * st.session_state.curr_data['lots']
         
-        # Accuracy Backtest UI
-        col_m, col_g = st.columns(2)
-        col_m.progress(0.74, text="Backtest Success Rate (74%)")
-        col_m.write("**Past 5 Signals:** ✅ ✅ ❌ ✅ ✅")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Asset:** {st.session_state.curr_data['ticker']}")
+            st.write(f"**Total Quantity:** {total_qty} units")
+            if st.button("BUY NOW (Paper Order)"):
+                st.session_state.portfolio.append({
+                    "ticker": st.session_state.curr_data['ticker'],
+                    "entry": st.session_state.curr_data['price'],
+                    "qty": total_qty,
+                    "time": datetime.now().strftime("%H:%M:%S")
+                })
         
-        col_g.markdown("""
-        **Why Gemini 3?**
-        - **Reasoning Level:** Superior instruction following for complex SL/TP logic.
-        - **Latency:** Sub-1s processing for fast scalping alerts.
-        - **Agentic Bias:** Built to suggest *actions* rather than just data.
-        """)
-        st.markdown(DISCLAIMER, unsafe_allow_html=True)
+        with col2:
+            st.write("📂 **Active Positions**")
+            if not st.session_state.portfolio:
+                st.info("No active trades.")
+            for trade in st.session_state.portfolio:
+                st.success(f"{trade['ticker']} | Entry: {trade['entry']} | Qty: {trade['qty']} | Time: {trade['time']}")
+        st.caption(DISCLAIMER)
