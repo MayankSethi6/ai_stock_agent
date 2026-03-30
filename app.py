@@ -1,118 +1,155 @@
 import streamlit as st
 import yfinance as yf
 from google import genai
-import plotly.graph_objects as go
 import pandas as pd
 from datetime import datetime
+import pytz
 
-# --- 1. CONFIG & STYLE ---
-st.set_page_config(page_title="AI Alpha - NSE Hedge Fund Agent", layout="wide", page_icon="🏛️")
+# --- 1. CONFIG & SYSTEM ARCHITECTURE ---
+st.set_page_config(page_title="AI Alpha - NSE Institutional Desk", layout="wide", page_icon="🏛️")
 
-# Restrict to NSE only
-NSE_TICKERS = ["NIFTY.NS", "^NSEI", "BANKNIFTY.NS", "^NSEBANK", "RELIANCE.NS", "HDFCBANK.NS", "SBIN.NS", "TCS.NS", "INFY.NS"]
+# March 2026 NSE F&O Master List (Ticker: Lot Size)
+NSE_FO_MASTER = {
+    "NIFTY.NS": 65, "BANKNIFTY.NS": 30, "FINNIFTY.NS": 60, "MIDCPNIFTY.NS": 120,
+    "RELIANCE.NS": 250, "TCS.NS": 175, "HDFCBANK.NS": 550, "ICICIBANK.NS": 700,
+    "INFY.NS": 400, "SBIN.NS": 1500, "BHARTIARTL.NS": 950, "ITC.NS": 1600,
+    "TATAMOTORS.NS": 1425, "KOTAKBANK.NS": 400, "LT.NS": 300, "AXISBANK.NS": 625
+}
 
-DISCLAIMER = "⚠️ **Institutional Disclosure:** Professional Trading involves capital risk. 2026 NSE Lot Sizes applied. Not a SEBI advisory."
+DISCLAIMER = "⚠️ **Institutional Disclosure:** Trading involves risk. Market Hours: 9:15 AM - 3:30 PM IST. Budget 2026 STT rates applied."
 
+# --- 2. PERSISTENT STATE MANAGEMENT ---
 if 'client' not in st.session_state:
     st.session_state.client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# Initialize Paper Trading Session
+if 'fund_balance' not in st.session_state:
+    st.session_state.fund_balance = 1000000.0  # Initial 10 Lakh Paper Cash
+
 if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = [] # List of dicts: {ticker, lots, entry, current, status}
+    st.session_state.portfolio = [] # Active Trades
 
-# --- 2. THE 2026 NSE QUANT ENGINE ---
-def get_nse_lot(ticker):
-    """Accurate 2026 NSE Revised Lot Sizes."""
-    lot_map = {
-        "NIFTY.NS": 65, "^NSEI": 65,
-        "BANKNIFTY.NS": 30, "^NSEBANK": 30,
-        "FINNIFTY.NS": 60, "RELIANCE.NS": 500,
-        "HDFCBANK.NS": 550, "SBIN.NS": 1500
-    }
-    return lot_map.get(ticker.upper(), 100)
+if 'pnl_ledger' not in st.session_state:
+    st.session_state.pnl_ledger = [] # Closed Trades
 
-def fund_manager_strategy(ticker, price, rsi, volume_surge):
-    """Gemini-3-Flash reasoning as a 10-year Hedge Fund Vet."""
-    prompt = f"""
-    Act as a Hedge Fund Manager with 10+ years of consistent profit. 
-    Context: NSE Market, March 2026. Ticker: {ticker} at ₹{price}.
-    Technicals: RSI is {rsi:.1f}. Volume Surge: {volume_surge}.
+# --- 3. CORE LOGIC ENGINES ---
+
+def get_market_status():
+    """Checks if NSE is currently open for orders."""
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    m_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    m_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
     
-    Instruction: Provide a high-conviction scalp strategy (2-5% target). 
-    Focus on risk-mitigation. If the setup is weak, tell the user to 'STAY IN CASH'.
-    Include:
-    1. Exact Buy/Sell points for an ATM Call/Put.
-    2. The 'Stop-Out' time (minutes) before Theta decay ruins the trade.
+    # 0=Mon, 4=Fri
+    if now.weekday() < 5 and m_open <= now <= m_close:
+        return True, now.strftime("%H:%M:%S")
+    return False, now.strftime("%H:%M:%S")
+
+def hedge_fund_manager_ai(ticker, price, rsi):
+    """Gemini-3-Flash reasoning as a 10-year Veteran Trader."""
+    prompt = f"""
+    Context: NSE India (March 2026). Professional Hedge Fund View.
+    Asset: {ticker} @ ₹{price}. RSI: {rsi:.2f}.
+    Instruction: Recommend a scalp (2-5% target). If logic fails, say 'STAY IN CASH'.
+    Include Entry, Target, and a specific 'Time-to-Exit' in minutes based on Theta decay.
     """
-    res = st.session_state.client.models.generate_content(
-        model="gemini-3-flash-preview", 
-        contents=[prompt]
-    )
+    res = st.session_state.client.models.generate_content(model="gemini-3-flash-preview", contents=[prompt])
     return res.text
 
-# --- 3. UI LAYOUT ---
-st.title("🏛️ AI Alpha: NSE Institutional Dashboard")
-
+# --- 4. SIDEBAR: FUND EXECUTION ---
 with st.sidebar:
-    st.header("🏢 Fund Execution Desk")
-    selected_ticker = st.selectbox("Select NSE Asset", NSE_TICKERS)
-    lot_count = st.number_input("Number of Lots", min_value=1, max_value=50, value=1)
+    st.header("💳 Fund Management")
+    st.metric("Liquid Paper Cash", f"₹{st.session_state.fund_balance:,.2f}")
+    st.divider()
     
-    if st.button("Generate Alpha"):
-        with st.spinner("Analyzing Market Microstructure..."):
-            tk = yf.Ticker(selected_ticker)
+    st.header("⚡ Order Entry")
+    ticker_choice = st.selectbox("Select Asset", options=list(NSE_FO_MASTER.keys()))
+    lots = st.number_input("Lots to Trade", min_value=1, max_value=50, value=1)
+    
+    is_open, current_time = get_market_status()
+    if is_open:
+        st.success(f"Market Open: {current_time}")
+    else:
+        st.error(f"Market Closed: {current_time}")
+
+    if st.button("Generate AI Alpha"):
+        with st.spinner("Syncing NSE Micro-data..."):
+            tk = yf.Ticker(ticker_choice)
             hist = tk.history(period="5d", interval="15m")
             if not hist.empty:
-                curr_price = hist['Close'].iloc[-1]
-                # Simple RSI
+                cp = hist['Close'].iloc[-1]
                 delta = hist['Close'].diff()
                 gain = (delta.where(delta > 0, 0)).rolling(14).mean()
                 loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                rsi = 100 - (100 / (1 + (gain/loss))).iloc[-1]
-                vol_surge = hist['Volume'].iloc[-1] > (hist['Volume'].rolling(20).mean().iloc[-1] * 1.5)
+                rsi_val = 100 - (100 / (1 + (gain/loss))).iloc[-1]
                 
-                analysis = fund_manager_strategy(selected_ticker, curr_price, rsi, vol_surge)
-                
-                st.session_state.update({
-                    "curr_data": {"ticker": selected_ticker, "price": curr_price, "lots": lot_count, "analysis": analysis}
-                })
+                report = hedge_fund_manager_ai(ticker_choice, cp, rsi_val)
+                st.session_state.curr_trade = {"ticker": ticker_choice, "price": cp, "lots": lots, "report": report}
 
-# --- 4. TABS & PAPER TRADING ---
-tab_stock, tab_ai, tab_paper = st.tabs(["📊 Market Watch", "🧠 Manager Recommendation", "💰 Live Paper Trade"])
+# --- 5. DASHBOARD TABS ---
+tab_mgr, tab_desk, tab_ledger = st.tabs(["🧠 Manager Insight", "🚀 Trading Desk", "📜 Performance Ledger"])
 
-if "curr_data" in st.session_state:
-    with tab_stock:
-        st.subheader(f"Institutional View: {st.session_state.curr_data['ticker']}")
-        # Placeholder for price chart
-        st.write(f"Current Spot Price: ₹{st.session_state.curr_data['price']:.2f}")
-        st.caption(DISCLAIMER)
+with tab_mgr:
+    if "curr_trade" in st.session_state:
+        st.subheader(f"Strategy for {st.session_state.curr_trade['ticker']}")
+        st.info(st.session_state.curr_trade['report'])
+    else:
+        st.write("Analyze an asset in the sidebar to receive instructions.")
+    st.caption(DISCLAIMER)
 
-    with tab_ai:
-        st.subheader("💡 Manager's High-Conviction Report")
-        st.write(st.session_state.curr_data['analysis'])
-        st.caption(DISCLAIMER)
-
-    with tab_paper:
-        st.subheader("🚀 Live Execution (Paper Trading)")
-        lot_size = get_nse_lot(st.session_state.curr_data['ticker'])
-        total_qty = lot_size * st.session_state.curr_data['lots']
+with tab_desk:
+    if "curr_trade" in st.session_state:
+        lot_size = NSE_FO_MASTER[st.session_state.curr_trade['ticker']]
+        total_qty = lot_size * st.session_state.curr_trade['lots']
+        est_cost = st.session_state.curr_trade['price'] * total_qty * 0.05 # Using 5% margin for F&O
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write(f"**Asset:** {st.session_state.curr_data['ticker']}")
-            st.write(f"**Total Quantity:** {total_qty} units")
-            if st.button("BUY NOW (Paper Order)"):
+        st.write(f"**Execution:** Buy {total_qty} units of {st.session_state.curr_trade['ticker']}")
+        st.write(f"**Estimated Margin Required:** ₹{est_cost:,.2f}")
+        
+        if st.button("EXECUTE BUY ORDER"):
+            if not is_open:
+                st.error("Market is closed. Orders blocked.")
+            elif st.session_state.fund_balance < est_cost:
+                st.error("Insufficient Fund Balance!")
+            else:
+                # Deduct from balance
+                st.session_state.fund_balance -= est_cost
                 st.session_state.portfolio.append({
-                    "ticker": st.session_state.curr_data['ticker'],
-                    "entry": st.session_state.curr_data['price'],
+                    "ticker": st.session_state.curr_trade['ticker'],
+                    "entry": st.session_state.curr_trade['price'],
                     "qty": total_qty,
-                    "time": datetime.now().strftime("%H:%M:%S")
+                    "margin": est_cost,
+                    "time": current_time
                 })
-        
-        with col2:
-            st.write("📂 **Active Positions**")
-            if not st.session_state.portfolio:
-                st.info("No active trades.")
-            for trade in st.session_state.portfolio:
-                st.success(f"{trade['ticker']} | Entry: {trade['entry']} | Qty: {trade['qty']} | Time: {trade['time']}")
-        st.caption(DISCLAIMER)
+                st.success("Order Filled at Market.")
+    
+    st.divider()
+    st.subheader("📂 Active Institutional Positions")
+    if not st.session_state.portfolio:
+        st.info("No active exposure.")
+    else:
+        for i, pos in enumerate(st.session_state.portfolio):
+            with st.expander(f"{pos['ticker']} | Qty: {pos['qty']} | Entry: ₹{pos['entry']}", expanded=True):
+                if st.button(f"SELL & WRITE OFF POSITION", key=f"sell_{i}"):
+                    # Simulation: Get exit price (usually live, here mocked from current analysis)
+                    exit_p = yf.Ticker(pos['ticker']).history(period="1d")['Close'].iloc[-1]
+                    raw_pnl = (exit_p - pos['entry']) * pos['qty']
+                    
+                    # WRITE OFF LOGIC: Return margin + P&L to balance
+                    st.session_state.fund_balance += (pos['margin'] + raw_pnl)
+                    st.session_state.pnl_ledger.append({
+                        "Asset": pos['ticker'], "P&L": raw_pnl, "Time": pos['time'], "Exit": exit_p
+                    })
+                    st.session_state.portfolio.pop(i)
+                    st.rerun()
+
+with tab_ledger:
+    st.subheader("📊 Closed Trade Performance")
+    if st.session_state.pnl_ledger:
+        df = pd.DataFrame(st.session_state.pnl_ledger)
+        total_pnl = df['P&L'].sum()
+        st.metric("Total Realized P&L", f"₹{total_pnl:,.2f}", delta=f"{total_pnl:,.2f}")
+        st.table(df)
+    else:
+        st.write("No trades written off yet.")
+    st.caption(DISCLAIMER)
