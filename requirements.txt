@@ -6,3 +6,4 @@ plotly
 fpdf2
 numpy
 jugaad-data
+openai
