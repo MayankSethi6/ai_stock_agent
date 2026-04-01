@@ -9,7 +9,7 @@ from datetime import datetime, date
 # --- 1. CONFIG & SYSTEM ---
 st.set_page_config(page_title="NSE Alpha - Pro F&O", layout="wide", page_icon="🏛️")
 
-# Official March 2026 NSE Lot Sizes
+# Official 2026 NSE Lot Sizes
 NSE_LOTS = {"NIFTY": 65, "BANKNIFTY": 30, "FINNIFTY": 60, "RELIANCE": 250, "SBIN": 750, "TCS": 175, "INFY": 400}
 
 if 'client' not in st.session_state:
@@ -52,11 +52,22 @@ def get_option_ticker(symbol, strike, opt_type, expiry_date):
     return f"{prefix}{expiry_str}{suffix}{int(strike)}.NS"
 
 def fetch_live_price(ticker):
+    """
+    Bulletproofed price fetcher to prevent Yahoo 1d data errors.
+    """
     try:
-        data = yf.Ticker(ticker).history(period="1d")
-        return float(data['Close'].iloc[-1]) if not data.empty else 0.0
-    except: 
-        return 0.0
+        tk = yf.Ticker(ticker)
+        data = tk.history(period="1d")
+        if not data.empty:
+            return float(data['Close'].iloc[-1])
+        
+        # Fallback to fast_info if history fails (Crucial for illiquid F&O)
+        info = tk.fast_info
+        if 'last_price' in info and info['last_price'] is not None:
+            return float(info['last_price'])
+    except Exception:
+        pass
+    return 0.0
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
@@ -85,13 +96,19 @@ with st.sidebar:
             if not hist.empty:
                 cp = float(hist['Close'].iloc[-1])
                 prompt = f"Hedge Fund Manager. Analyze {asset['name']} (NSE) at price {cp}. Bullish/Bearish? Suggest strike."
-                res = st.session_state.client.models.generate_content(model="gemini-3-flash-preview", contents=[prompt])
+                
+                # FIX 1: 503 Server Error Handling
+                try:
+                    res = st.session_state.client.models.generate_content(model="gemini-3-flash-preview", contents=[prompt])
+                    report_text = res.text
+                except Exception:
+                    report_text = "⚠️ The AI engine is experiencing heavy demand right now. Please try again in a few moments."
                 
                 st.session_state.curr_trade = {
                     "ticker": asset['symbol'], 
                     "name": asset['name'], 
                     "market_price": cp, 
-                    "report": res.text,
+                    "report": report_text,
                 }
                 st.rerun()
     else:
@@ -114,7 +131,6 @@ with t_desk:
         
         mode = st.radio("Instrument", ["Cash", "Options", "Spreads"], horizontal=True)
         
-        # LOT QUANTITY HANDLED SAFELY
         lot_key = tr['ticker'].replace(".NS","").replace("^","").replace("NSEI","NIFTY").replace("NSEBANK","BANKNIFTY")
         lot_size = NSE_LOTS.get(lot_key, 1)
         lots = st.number_input(f"Quantity (Lots of {lot_size})", min_value=1, value=1)
@@ -154,7 +170,8 @@ with t_desk:
             if st.button("🔄 Refresh Strike Price"):
                 st.session_state.last_strike_price = fetch_live_price(opt_ticker)
                 
-            live_prem = st.session_state.get('last_strike_price', 100.0)
+            live_prem = st.session_state.get('last_strike_price', 0.0)
+            # FIX 2: If price is 0 (delisted error), default to a mock 100 premium instead of breaking
             entry_price = c3.number_input("Premium", value=live_prem if live_prem > 0 else 100.0)
             
             st.caption(f"Target: `{opt_ticker}` | Live Premium: ₹{live_prem}")
@@ -176,49 +193,152 @@ with t_desk:
 
         # --- MODE 3: SPREADS (MULTI-LEG) ---
         elif mode == "Spreads":
-            strategy = st.selectbox("Select Spread", ["Bull Call Spread"])
-            c1, c2 = st.columns(2)
-            
+            strategy = st.selectbox("Select Spread", ["Bull Call Spread", "Bear Put Spread", "Iron Condor"])
             atm_strike = int(round(tr['market_price']/50)*50)
-            strike_buy = c1.number_input("Buy Strike (ITM/ATM)", value=atm_strike, step=50)
-            strike_sell = c2.number_input("Sell Strike (OTM)", value=atm_strike + 100, step=50)
             
-            ticker_buy = get_option_ticker(tr['ticker'], strike_buy, "CE", expiry_date)
-            ticker_sell = get_option_ticker(tr['ticker'], strike_sell, "CE", expiry_date)
+            # Setup Plotly Visual arrays
+            spot_range = np.linspace(atm_strike - 500, atm_strike + 500, 100)
+            payoff = np.zeros_like(spot_range)
             
-            if st.button("🔄 Fetch Spread Prices"):
-                st.session_state.spread_buy_price = fetch_live_price(ticker_buy)
-                st.session_state.spread_sell_price = fetch_live_price(ticker_sell)
+            # --- BULL CALL SPREAD ---
+            if strategy == "Bull Call Spread":
+                c1, c2 = st.columns(2)
+                strike_buy = c1.number_input("Buy Strike (ITM/ATM)", value=atm_strike, step=50)
+                strike_sell = c2.number_input("Sell Strike (OTM)", value=atm_strike + 100, step=50)
                 
-            p_buy = st.session_state.get('spread_buy_price', 150.0)
-            p_sell = st.session_state.get('spread_sell_price', 50.0)
-            
-            st.write(f"📈 Buy Leg Premium: ₹{p_buy} | 📉 Sell Leg Premium: ₹{p_sell}")
-            
-            net_premium = p_buy - p_sell
-            # Spread margin is typically capped at the net premium paid + safety buffer
-            req_margin = net_premium * total_qty
-            
-            st.metric("Net Premium Paid (Total Margin)", f"₹{req_margin:,.2f}")
-            
-            if st.button("CONFIRM SPREAD EXECUTION"):
-                if st.session_state.fund_balance >= req_margin:
-                    st.session_state.fund_balance -= req_margin
+                ticker_buy = get_option_ticker(tr['ticker'], strike_buy, "CE", expiry_date)
+                ticker_sell = get_option_ticker(tr['ticker'], strike_sell, "CE", expiry_date)
+                
+                if st.button("🔄 Fetch Spread Prices"):
+                    st.session_state.spread_buy_price = fetch_live_price(ticker_buy)
+                    st.session_state.spread_sell_price = fetch_live_price(ticker_sell)
                     
-                    # Add Buy Leg
-                    st.session_state.portfolio.append({
-                        "name": f"{tr['name']} {strike_buy} CE (Spread Buy)", "ticker": ticker_buy, 
-                        "entry": p_buy, "qty": total_qty, "side": "BUY", "margin": req_margin * 0.7, "mode": "Options"
-                    })
-                    # Add Sell Leg
-                    st.session_state.portfolio.append({
-                        "name": f"{tr['name']} {strike_sell} CE (Spread Sell)", "ticker": ticker_sell, 
-                        "entry": p_sell, "qty": total_qty, "side": "SELL", "margin": req_margin * 0.3, "mode": "Options"
-                    })
+                p_buy = st.session_state.get('spread_buy_price', 150.0) if st.session_state.get('spread_buy_price', 0) > 0 else 150.0
+                p_sell = st.session_state.get('spread_sell_price', 50.0) if st.session_state.get('spread_sell_price', 0) > 0 else 50.0
+                
+                net_premium = p_buy - p_sell
+                req_margin = net_premium * total_qty
+                
+                # Payoff calculation
+                payoff = (np.maximum(spot_range - strike_buy, 0) - p_buy) - (np.maximum(spot_range - strike_sell, 0) - p_sell)
+                payoff *= total_qty
+                
+                st.write(f"📈 Buy Leg: ₹{p_buy} | 📉 Sell Leg: ₹{p_sell}")
+                st.metric("Net Premium Paid (Total Margin)", f"₹{req_margin:,.2f}")
+                
+                if st.button("CONFIRM SPREAD EXECUTION"):
+                    if st.session_state.fund_balance >= req_margin:
+                        st.session_state.fund_balance -= req_margin
+                        st.session_state.portfolio.append({"name": f"{tr['name']} {strike_buy} CE (Spread Buy)", "ticker": ticker_buy, "entry": p_buy, "qty": total_qty, "side": "BUY", "margin": req_margin*0.7, "mode": "Options"})
+                        st.session_state.portfolio.append({"name": f"{tr['name']} {strike_sell} CE (Spread Sell)", "ticker": ticker_sell, "entry": p_sell, "qty": total_qty, "side": "SELL", "margin": req_margin*0.3, "mode": "Options"})
+                        st.toast(f"Bull Call Spread Executed!")
+                        st.rerun()
+                    else: st.error("Insufficient Funds!")
+
+            # --- BEAR PUT SPREAD ---
+            elif strategy == "Bear Put Spread":
+                c1, c2 = st.columns(2)
+                strike_buy = c1.number_input("Buy Strike (ATM/ITM)", value=atm_strike, step=50)
+                strike_sell = c2.number_input("Sell Strike (OTM)", value=atm_strike - 100, step=50)
+                
+                ticker_buy = get_option_ticker(tr['ticker'], strike_buy, "PE", expiry_date)
+                ticker_sell = get_option_ticker(tr['ticker'], strike_sell, "PE", expiry_date)
+                
+                if st.button("🔄 Fetch Spread Prices"):
+                    st.session_state.spread_buy_price = fetch_live_price(ticker_buy)
+                    st.session_state.spread_sell_price = fetch_live_price(ticker_sell)
                     
-                    st.toast(f"Bull Call Spread Executed!")
-                    st.rerun()
-                else: st.error("Insufficient Funds!")
+                p_buy = st.session_state.get('spread_buy_price', 150.0) if st.session_state.get('spread_buy_price', 0) > 0 else 150.0
+                p_sell = st.session_state.get('spread_sell_price', 50.0) if st.session_state.get('spread_sell_price', 0) > 0 else 50.0
+                
+                net_premium = p_buy - p_sell
+                req_margin = net_premium * total_qty
+                
+                # Payoff calculation
+                payoff = (np.maximum(strike_buy - spot_range, 0) - p_buy) - (np.maximum(strike_sell - spot_range, 0) - p_sell)
+                payoff *= total_qty
+                
+                st.write(f"📉 Buy Leg: ₹{p_buy} | 📈 Sell Leg: ₹{p_sell}")
+                st.metric("Net Premium Paid (Total Margin)", f"₹{req_margin:,.2f}")
+                
+                if st.button("CONFIRM SPREAD EXECUTION"):
+                    if st.session_state.fund_balance >= req_margin:
+                        st.session_state.fund_balance -= req_margin
+                        st.session_state.portfolio.append({"name": f"{tr['name']} {strike_buy} PE (Spread Buy)", "ticker": ticker_buy, "entry": p_buy, "qty": total_qty, "side": "BUY", "margin": req_margin*0.7, "mode": "Options"})
+                        st.session_state.portfolio.append({"name": f"{tr['name']} {strike_sell} PE (Spread Sell)", "ticker": ticker_sell, "entry": p_sell, "qty": total_qty, "side": "SELL", "margin": req_margin*0.3, "mode": "Options"})
+                        st.toast(f"Bear Put Spread Executed!")
+                        st.rerun()
+                    else: st.error("Insufficient Funds!")
+
+            # --- IRON CONDOR ---
+            elif strategy == "Iron Condor":
+                c1, c2, c3, c4 = st.columns(4)
+                p_buy_strike = c1.number_input("Put Buy Strike", value=atm_strike - 200, step=50)
+                p_sell_strike = c2.number_input("Put Sell Strike", value=atm_strike - 100, step=50)
+                c_sell_strike = c3.number_input("Call Sell Strike", value=atm_strike + 100, step=50)
+                c_buy_strike = c4.number_input("Call Buy Strike", value=atm_strike + 200, step=50)
+                
+                tk_p_buy = get_option_ticker(tr['ticker'], p_buy_strike, "PE", expiry_date)
+                tk_p_sell = get_option_ticker(tr['ticker'], p_sell_strike, "PE", expiry_date)
+                tk_c_sell = get_option_ticker(tr['ticker'], c_sell_strike, "CE", expiry_date)
+                tk_c_buy = get_option_ticker(tr['ticker'], c_buy_strike, "CE", expiry_date)
+                
+                if st.button("🔄 Fetch Condor Prices"):
+                    st.session_state.ic_pb = fetch_live_price(tk_p_buy)
+                    st.session_state.ic_ps = fetch_live_price(tk_p_sell)
+                    st.session_state.ic_cs = fetch_live_price(tk_c_sell)
+                    st.session_state.ic_cb = fetch_live_price(tk_c_buy)
+                    
+                pb = st.session_state.get('ic_pb', 30.0) if st.session_state.get('ic_pb', 0) > 0 else 30.0
+                ps = st.session_state.get('ic_ps', 80.0) if st.session_state.get('ic_ps', 0) > 0 else 80.0
+                cs = st.session_state.get('ic_cs', 80.0) if st.session_state.get('ic_cs', 0) > 0 else 80.0
+                cb = st.session_state.get('ic_cb', 30.0) if st.session_state.get('ic_cb', 0) > 0 else 30.0
+                
+                st.write(f"🛡️ P-Buy: ₹{pb} | 💰 P-Sell: ₹{ps} | 💰 C-Sell: ₹{cs} | 🛡️ C-Buy: ₹{cb}")
+                
+                net_credit = (ps + cs) - (pb + cb)
+                spread_width = 100 
+                req_margin = (spread_width - net_credit) * total_qty
+                
+                # Payoff calculation
+                payoff_pb = np.maximum(p_buy_strike - spot_range, 0) - pb
+                payoff_ps = ps - np.maximum(p_sell_strike - spot_range, 0)
+                payoff_cs = cs - np.maximum(spot_range - c_sell_strike, 0)
+                payoff_cb = np.maximum(spot_range - c_buy_strike, 0) - cb
+                payoff = (payoff_pb + payoff_ps + payoff_cs + payoff_cb) * total_qty
+                
+                st.metric("Margin Required (Calculated)", f"₹{req_margin:,.2f}")
+                
+                if st.button("CONFIRM IRON CONDOR EXECUTION"):
+                    if st.session_state.fund_balance >= req_margin:
+                        st.session_state.fund_balance -= req_margin
+                        legs = [
+                            (f"IC Put Buy {p_buy_strike}", tk_p_buy, pb, "BUY"),
+                            (f"IC Put Sell {p_sell_strike}", tk_p_sell, ps, "SELL"),
+                            (f"IC Call Sell {c_sell_strike}", tk_c_sell, cs, "SELL"),
+                            (f"IC Call Buy {c_buy_strike}", tk_c_buy, cb, "BUY")
+                        ]
+                        for name, tkr, prem, side in legs:
+                            st.session_state.portfolio.append({
+                                "name": f"{tr['name']} {name}", "ticker": tkr, "entry": prem, 
+                                "qty": total_qty, "side": side, "margin": req_margin / 4, "mode": "Options"
+                            })
+                        st.toast(f"Iron Condor Executed!")
+                        st.rerun()
+                    else: st.error("Insufficient Funds!")
+
+            # --- RENDER PAYOFF GRAPH ---
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=spot_range, y=payoff, mode='lines', name='Strategy Payoff', line=dict(color='orange', width=2)))
+            fig.add_hline(y=0, line_dash="dash", line_color="white")
+            fig.update_layout(
+                title=f"{strategy} - Projected Payoff at Expiry",
+                xaxis_title="Underlying Asset Spot Price (₹)",
+                yaxis_title="Net Profit / Loss (₹)",
+                template="plotly_dark",
+                height=350
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
 with t_port:
     st.subheader("Current Open Positions")
