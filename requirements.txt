@@ -7,3 +7,4 @@ fpdf2
 numpy
 jugaad-data
 openai
+google-api-core
