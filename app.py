@@ -4,31 +4,29 @@ from datetime import datetime, date
 import time
 from openai import OpenAI
 from google import genai
-from google.api_core import exceptions
 from jugaad_data.nse import NSELive
 
-# --- 1. CONFIG & CLIENTS ---
-st.set_page_config(page_title="NSE Alpha - Multi-AI", layout="wide")
+# --- 1. SYSTEM SETUP ---
+st.set_page_config(page_title="NSE Alpha Pro", layout="wide", page_icon="🏛️")
 
-# Initialize OpenAI
+# Initialize API Clients
 if 'openai_client' not in st.session_state:
     st.session_state.openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-
-# Initialize Gemini (as Fallback)
 if 'gemini_client' not in st.session_state:
-    st.session_state.client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
+    st.session_state.gemini_client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# Global State
+# Initialize Persistent State
 for key, val in {
     'fund_balance': 1000000.0, 'portfolio': [], 'history': [], 
-    'active_asset': None, 'ai_report': None, 'ai_engine': 'ChatGPT (GPT-4o)'
+    'active_asset': None, 'ai_report': None, 'quota_count': 0
 }.items():
     if key not in st.session_state: st.session_state[key] = val
 
 # --- 2. DATA & AI ENGINES ---
 n = NSELive()
 
-def get_nse_price(symbol, is_opt=False, strike=None, otype=None, expiry=None):
+def fetch_nse_price(symbol, is_opt=False, strike=None, otype=None, expiry=None):
+    """Reliable price engine using jugaad-data."""
     try:
         if not is_opt:
             if "NIFTY" in symbol:
@@ -36,7 +34,6 @@ def get_nse_price(symbol, is_opt=False, strike=None, otype=None, expiry=None):
                 return n.live_index(name)['data'][0]['lastPrice']
             return n.stock_quote(symbol)['priceInfo']['lastPrice']
         else:
-            # Option Chain Logic
             chain = n.index_option_chain(symbol) if "NIFTY" in symbol else n.stock_option_chain(symbol)
             exp_str = expiry.strftime('%d-%b-%Y')
             for row in chain['records']['data']:
@@ -44,73 +41,77 @@ def get_nse_price(symbol, is_opt=False, strike=None, otype=None, expiry=None):
                     return row[otype]['lastPrice']
     except: return 0.0
 
-def fetch_ai_intel(prompt):
-    """Attempt ChatGPT first, fallback to Gemini on failure."""
-    # Attempt 1: OpenAI
+def run_multi_ai(prompt):
+    """GPT-5.4 Primary with Gemini Fallback."""
+    st.session_state.quota_count += 1
     try:
+        # Attempt GPT-5.4 Thinking
         res = st.session_state.openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": "You are an NSE F&O Quant."}, {"role": "user", "content": prompt}]
+            model="gpt-5.4-thinking",
+            messages=[{"role": "system", "content": "NSE Quant Expert"}, {"role": "user", "content": prompt}]
         )
-        return f"🤖 **ChatGPT Intel:**\n\n{res.choices[0].message.content}"
-    except Exception as e:
-        st.warning("ChatGPT Limit reached. Switching to Gemini Fallback...")
-        # Attempt 2: Gemini
+        return f"🤖 **GPT-5.4 Intel:**\n\n{res.choices[0].message.content}"
+    except:
         try:
-            res = st.session_state.client.models.generate_content(model="gemini-3-flash-preview", contents=[prompt])
-            return f"♊ **Gemini Fallback Intel:**\n\n{res.text}"
+            # Fallback to Gemini
+            res = st.session_state.gemini_client.models.generate_content(model="gemini-3-flash", contents=[prompt])
+            return f"♊ **Gemini Fallback:**\n\n{res.text}"
         except:
-            return "❌ All AI Engines exhausted. Please check API quotas."
+            return "❌ Quota Exhausted on all engines. Please check billing."
 
-# --- 3. SIDEBAR ---
+# --- 3. SIDEBAR: QUOTE MONITOR & SETTINGS ---
 with st.sidebar:
-    st.header("🇮🇳 Pro Terminal")
+    st.header("⚙️ Terminal Control")
     st.metric("Liquid Cash", f"₹{st.session_state.fund_balance:,.2f}")
-    
-    # Margin Monitor
-    blocked = sum([p['margin'] for p in st.session_state.portfolio])
-    st.write(f"**Blocked Margin:** ₹{blocked:,.2f}")
+    st.write(f"**AI Calls Today:** {st.session_state.quota_count}")
     
     st.divider()
-    search = st.text_input("NSE Symbol", value="NIFTY").upper()
-    if st.button("🔍 Fixate & Sync"):
-        price = get_nse_price(search)
-        st.session_state.active_asset = {"symbol": search, "price": price}
-    
-    if st.session_state.active_asset:
-        if st.button("🔥 RUN DUAL-AI INTEL", type="primary"):
-            asset = st.session_state.active_asset
-            st.session_state.ai_report = fetch_ai_intel(f"Analyze {asset['symbol']} at {asset['price']}. Suggest Naked vs Spread.")
+    st.subheader("📈 Quote Monitor")
+    monitor_list = st.text_input("Tickers (comma separated)", "NIFTY, BANKNIFTY, RELIANCE").upper()
+    if st.button("🔄 Sync Market Prices"):
+        for t in monitor_list.split(','):
+            p = fetch_nse_price(t.strip())
+            st.metric(t.strip(), f"₹{p:,.2f}")
 
-# --- 4. MAIN TABS ---
-t_ai, t_desk, t_port, t_hist = st.tabs(["🧠 AI Strategy", "🚀 Execution", "📊 Portfolio", "📜 History"])
+    st.divider()
+    search = st.text_input("Active Trade Focus", value="NIFTY").upper()
+    if st.button("🔍 Fixate Symbol"):
+        p = fetch_nse_price(search)
+        st.session_state.active_asset = {"symbol": search, "price": p}
+        st.success(f"Locked: {search} @ {p}")
+
+# --- 4. MAIN INTERFACE ---
+t_ai, t_desk, t_port, t_hist = st.tabs(["🧠 AI Quant", "🚀 Execution", "📊 Live P/L", "📜 History"])
 
 with t_ai:
-    if st.session_state.ai_report: st.markdown(st.session_state.ai_report)
-    else: st.info("Fixate an asset and run AI.")
+    if st.session_state.active_asset:
+        if st.button("🔥 GENERATE GPT-5 STRATEGY"):
+            asset = st.session_state.active_asset
+            prompt = f"Build a naked vs spread strategy for {asset['symbol']} at ₹{asset['price']}."
+            st.session_state.ai_report = run_multi_ai(prompt)
+    
+    if st.session_state.ai_report:
+        st.markdown(st.session_state.ai_report)
 
 with t_desk:
     if st.session_state.active_asset:
         asset = st.session_state.active_asset
-        st.subheader(f"Trading: {asset['symbol']} @ ₹{asset['price']}")
-        
+        st.subheader(f"Strategy Builder: {asset['symbol']}")
         c1, c2, c3 = st.columns(3)
-        mode = c1.selectbox("Mode", ["Naked Buy", "Naked Sell", "Spread Leg"])
+        mode = c1.selectbox("Order", ["Naked Buy", "Naked Sell", "Spread Leg"])
         strike = c2.number_input("Strike", value=int(asset['price']), step=50)
         otype = c3.selectbox("Type", ["CE", "PE"])
         
-        c4, c5 = st.columns(2)
-        expiry = c4.date_input("Expiry", value=date(2026, 4, 30))
-        lots = c5.number_input("Lots", min_value=1)
+        expiry = st.date_input("Expiry", value=date(2026, 4, 30))
+        lots = st.number_input("Lots", min_value=1)
         
-        # Live Sync for Premium
-        premium = get_nse_price(asset['symbol'], True, strike, otype, expiry) or 100.0
+        premium = fetch_nse_price(asset['symbol'], True, strike, otype, expiry) or 100.0
         qty = lots * (65 if "NIFTY" in asset['symbol'] else 250)
         margin = (185000 * lots) if mode == "Naked Sell" else (premium * qty)
         
-        st.write(f"**LTP:** ₹{premium} | **Required:** ₹{margin:,.2f}")
+        st.write(f"**LTP:** ₹{premium} | **Margin Req:** ₹{margin:,.2f}")
         
-        if st.button("EXECUTE ORDER", use_container_width=True):
+        if st.button("🚀 EXECUTE TRADE"):
             if st.session_state.fund_balance >= margin:
                 st.session_state.fund_balance -= margin
                 st.session_state.portfolio.append({
@@ -120,21 +121,19 @@ with t_desk:
                 st.rerun()
 
 with t_port:
-    if st.button("🔄 FORCE SYNC ALL PRICES"): st.rerun()
-    
-    total_unrealized = 0
+    if st.button("🔄 REFRESH PORTFOLIO SYNC"): st.rerun()
+    total_pnl = 0
     for i, pos in enumerate(st.session_state.portfolio):
-        cur = get_nse_price(pos['symbol'], True, pos['strike'], pos['otype'], pos['expiry']) or pos['entry']
+        cur = fetch_nse_price(pos['symbol'], True, pos['strike'], pos['otype'], pos['expiry']) or pos['entry']
         pnl = (cur - pos['entry']) * pos['qty'] if "Buy" in pos['mode'] else (pos['entry'] - cur) * pos['qty']
-        total_unrealized += pnl
-        
-        with st.expander(f"{pos['symbol']} {pos['strike']}{pos['otype']} | ₹{pnl:,.2f}"):
-            if st.button("Square Off", key=f"sq_{i}"):
-                st.session_state.fund_balance += (pos['margin'] + pnl)
-                st.session_state.history.append({"Asset": pos['symbol'], "P&L": pnl, "Time": datetime.now().strftime("%H:%M")})
-                st.session_state.portfolio.pop(i)
-                st.rerun()
-    st.metric("Portfolio P/L", f"₹{total_unrealized:,.2f}", delta=total_unrealized)
+        total_pnl += pnl
+        st.write(f"**{pos['symbol']} {pos['strike']}{pos['otype']}**: P/L ₹{pnl:,.2f}")
+        if st.button("Close Position", key=f"cl_{i}"):
+            st.session_state.fund_balance += (pos['margin'] + pnl)
+            st.session_state.history.append({"Asset": pos['symbol'], "P&L": pnl, "Date": datetime.now()})
+            st.session_state.portfolio.pop(i)
+            st.rerun()
+    st.metric("Unrealized P/L", f"₹{total_pnl:,.2f}", delta=total_pnl)
 
 with t_hist:
     if st.session_state.history:
