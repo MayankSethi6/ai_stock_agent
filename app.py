@@ -6,14 +6,13 @@ from google import genai
 from groq import Groq
 from jugaad_data.nse import NSELive
 
-# --- 1. PERSISTENT SESSION STATE ---
-# We use st.session_state to ensure history and P/L remain until a Hard Reset
+# --- 1. SESSION PERSISTENCE (Crucial for History/Cash) ---
 if 'fund_balance' not in st.session_state: st.session_state.fund_balance = 1000000.0
 if 'portfolio' not in st.session_state: st.session_state.portfolio = []
 if 'history' not in st.session_state: st.session_state.history = []
 if 'token_log' not in st.session_state: 
-    # Tracking usage per engine
     st.session_state.token_log = {"Gemini 3": 0, "Groq/Llama": 0, "OpenAI": 0}
+if 'active_asset' not in st.session_state: st.session_state.active_asset = {"symbol": "NIFTY", "price": 0.0}
 
 # Initialize Clients
 if 'openai_client' not in st.session_state:
@@ -23,9 +22,9 @@ if 'gemini_client' not in st.session_state:
 if 'groq_client' not in st.session_state:
     st.session_state.groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
-# --- 2. THE "NO-AI" PRICE ENGINE ---
+# --- 2. ZERO-TOKEN PRICE ENGINE ---
 def fetch_nse_price_only(symbol, is_opt=False, **kwargs):
-    """Zero AI Tokens. Purely fetches market data."""
+    """Fetches market data with 0 AI Tokens."""
     n = NSELive()
     try:
         if not is_opt:
@@ -41,89 +40,119 @@ def fetch_nse_price_only(symbol, is_opt=False, **kwargs):
                     return row[kwargs.get('otype')]['lastPrice']
     except: return 0.0
 
-# --- 3. MULTI-AI WITH TOKEN TRACKING ---
+# --- 3. TOKEN-MONITORED AI ENGINE ---
 def run_monitored_ai(prompt):
-    with st.status("🧠 AI Analysis in Progress...") as status:
-        # TIER 1: GEMINI 3
-        try:
+    with st.status("🧠 AI Analysis (Consuming Tokens)...") as status:
+        try: # Try Gemini 3 Flash Preview
             res = st.session_state.gemini_client.models.generate_content(
                 model="gemini-3-flash-preview", contents=[prompt]
             )
-            st.session_state.token_log["Gemini 3"] += 1 
+            st.session_state.token_log["Gemini 3"] += 1
             return f"♊ **Gemini 3:**\n\n{res.text}"
         except:
-            # TIER 2: GROQ
-            try:
+            try: # Fallback to Groq (High Limits)
                 res = st.session_state.groq_client.chat.completions.create(
                     model="llama-4-scout-17b", messages=[{"role": "user", "content": prompt}]
                 )
                 st.session_state.token_log["Groq/Llama"] += 1
                 return f"🦙 **Groq:**\n\n{res.choices[0].message.content}"
             except:
-                # TIER 3: OPENAI
-                try:
-                    res = st.session_state.openai_client.chat.completions.create(
-                        model="gpt-4o", messages=[{"role": "user", "content": prompt}]
-                    )
-                    st.session_state.token_log["OpenAI"] += 1
-                    return f"🤖 **OpenAI:**\n\n{res.choices[0].message.content}"
-                except:
-                    return "❌ All AI Quotas Exhausted."
+                return "❌ AI Quotas Exhausted."
 
-# --- 4. THE DASHBOARD ---
-st.title("🏛️ NSE Alpha Terminal")
-
+# --- 4. SIDEBAR DASHBOARD ---
 with st.sidebar:
-    st.header("📊 Usage Dashboard")
-    st.write("**AI Tokens Consumed (Today):**")
+    st.header("📊 Usage & Health")
+    st.subheader("AI Token Counter")
     for engine, count in st.session_state.token_log.items():
-        st.write(f"- {engine}: {count} calls")
+        st.write(f"● {engine}: **{count}** calls")
     
     st.divider()
     st.metric("Liquid Cash", f"₹{st.session_state.fund_balance:,.2f}")
     
-    if st.button("🚨 CLEAR ALL DATA (Hard Reset)"):
+    # Persistent Reset
+    if st.button("🚨 RESET ALL (History & Cash)", use_container_width=True):
         st.session_state.history = []
         st.session_state.portfolio = []
         st.session_state.fund_balance = 1000000.0
-        st.session_state.token_log = {"Gemini 3": 0, "Groq/Llama": 0, "OpenAI": 0}
+        st.session_state.token_log = {k: 0 for k in st.session_state.token_log}
         st.rerun()
 
-# --- 5. TABBED INTERFACE ---
-t_desk, t_port, t_hist, t_ai = st.tabs(["🚀 Execution", "📊 Live P/L", "📜 History", "🧠 AI Quant"])
+# --- 5. MAIN INTERFACE ---
+t_desk, t_port, t_hist, t_ai = st.tabs(["🚀 Execution Desk", "📊 Live P/L", "📜 Order History", "🧠 AI Quant"])
 
 with t_desk:
-    symbol = st.text_input("Symbol", "NIFTY").upper()
-    if st.button("Get Price (0 Tokens)"):
-        p = fetch_nse_price_only(symbol)
-        st.session_state.active_price = p
-        st.success(f"LTP: ₹{p}")
+    st.subheader("Trade Execution")
+    c1, c2 = st.columns([3, 1])
+    sym = c1.text_input("Ticker Symbol", value=st.session_state.active_asset['symbol']).upper()
+    if c2.button("Sync LTP (0 Tokens)", use_container_width=True):
+        p = fetch_nse_price_only(sym)
+        st.session_state.active_asset = {"symbol": sym, "price": p}
+    
+    ltp = st.session_state.active_asset['price']
+    st.write(f"**Current Market Price:** ₹{ltp:,.2f}")
+
+    st.divider()
+    col1, col2, col3 = st.columns(3)
+    mode = col1.selectbox("Order Mode", ["Naked Buy", "Naked Sell", "Spread Leg"])
+    strike = col2.number_input("Strike Price", value=int(ltp) if ltp > 0 else 22000, step=50)
+    otype = col3.selectbox("Option Type", ["CE", "PE"])
+    
+    col4, col5 = st.columns(2)
+    expiry = col4.date_input("Expiry Date", value=date(2026, 4, 30))
+    lots = col5.number_input("Number of Lots", min_value=1, step=1)
+
+    # Fetch Option Premium (0 Tokens)
+    premium = fetch_nse_price_only(sym, True, strike=strike, otype=otype, expiry=expiry) or 50.0
+    qty = lots * (50 if "NIFTY" in sym else 15)
+    margin = (165000 * lots) if mode == "Naked Sell" else (premium * qty)
+    
+    st.info(f"Premium: ₹{premium} | Est. Margin: ₹{margin:,.2f}")
+    
+    if st.button("🚀 EXECUTE TRADE", type="primary", use_container_width=True):
+        if st.session_state.fund_balance >= margin:
+            st.session_state.fund_balance -= margin
+            st.session_state.portfolio.append({
+                "symbol": sym, "strike": strike, "otype": otype, 
+                "expiry": expiry, "entry": premium, "qty": qty, "margin": margin, "mode": mode
+            })
+            st.toast("Trade Executed Successfully!")
+            st.rerun()
+        else:
+            st.error("Insufficient Funds!")
 
 with t_port:
-    col_a, col_b = st.columns([4, 1])
-    if col_b.button("🔄 Sync Prices (0 Tokens)"): st.rerun()
+    st.subheader("Active Portfolio")
+    if st.button("🔄 Sync Prices (0 Tokens)"): st.rerun()
     
-    unrealized = 0
+    total_unrealized = 0
     for i, pos in enumerate(st.session_state.portfolio):
-        # Direct Price Fetch (No AI used)
+        # Fresh Price Sync (0 Tokens)
         cur = fetch_nse_price_only(pos['symbol'], True, strike=pos['strike'], otype=pos['otype'], expiry=pos['expiry'])
         cur = cur if cur > 0 else pos['entry']
         pnl = (cur - pos['entry']) * pos['qty'] if "Buy" in pos['mode'] else (pos['entry'] - cur) * pos['qty']
-        unrealized += pnl
+        total_unrealized += pnl
         
-        st.write(f"**{pos['symbol']}**: P/L ₹{pnl:,.2f} (LTP: {cur})")
-        if st.button(f"Close #{i}"):
-            st.session_state.fund_balance += (pos['margin'] + pnl)
-            st.session_state.history.append({"Asset": pos['symbol'], "P&L": pnl, "Date": datetime.now()})
-            st.session_state.portfolio.pop(i)
-            st.rerun()
-    st.metric("Total Unrealized", f"₹{unrealized:,.2f}", delta=unrealized)
+        with st.expander(f"{pos['symbol']} {pos['strike']}{pos['otype']} | P/L: ₹{pnl:,.2f}"):
+            st.write(f"Entry: ₹{pos['entry']} | LTP: ₹{cur}")
+            if st.button("Close Position", key=f"close_{i}"):
+                st.session_state.fund_balance += (pos['margin'] + pnl)
+                st.session_state.history.append({
+                    "Symbol": pos['symbol'], "Strike": pos['strike'], "Type": pos['otype'],
+                    "P&L": pnl, "Exit_Time": datetime.now().strftime("%H:%M:%S")
+                })
+                st.session_state.portfolio.pop(i)
+                st.rerun()
+    st.metric("Total Unrealized P/L", f"₹{total_unrealized:,.2f}", delta=total_unrealized)
 
 with t_hist:
+    st.subheader("Closed Trade History")
     if st.session_state.history:
-        st.table(pd.DataFrame(st.session_state.history))
+        st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
+    else:
+        st.info("No closed trades yet.")
 
 with t_ai:
-    if st.button("🔥 GENERATE AI STRATEGY (Uses Tokens)"):
-        prompt = f"Analyze NIFTY for a naked sell strategy."
-        st.write(run_monitored_ai(prompt))
+    st.subheader("AI Strategy Analysis")
+    if st.button("🧠 GENERATE STRATEGY (Consumes Tokens)"):
+        prompt = f"Provide a high-probability strategy for {st.session_state.active_asset['symbol']} at ₹{st.session_state.active_asset['price']}."
+        st.markdown(run_monitored_ai(prompt))
